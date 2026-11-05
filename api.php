@@ -45,6 +45,11 @@ try {
             data_json TEXT NOT NULL,
             updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
     ');
 
     $action = isset($_GET['action']) ? $_GET['action'] : 'init';
@@ -67,6 +72,12 @@ try {
                 'lat' => (float)$row['lat'],
                 'lng' => (float)$row['lng']
             ];
+        }
+
+        $settings = [];
+        $stmtSet = $pdo->query('SELECT setting_key, setting_value FROM settings');
+        while ($row = $stmtSet->fetch()) {
+            $settings[$row['setting_key']] = $row['setting_value'];
         }
 
         $reportStmt = $pdo->prepare('SELECT file_name, is_forecast, data_json, updated_at FROM reports WHERE report_key = :key LIMIT 1');
@@ -92,8 +103,26 @@ try {
             'coordsCount' => count($coords),
             'coords' => $coords,
             'plz' => $plz,
+            'settings' => $settings,
             'report' => $report
         ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    if ($action === 'save_settings' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $raw = file_get_contents('php://input');
+        $body = json_decode($raw, true);
+        $items = isset($body['settings']) && is_array($body['settings']) ? $body['settings'] : [];
+        $now = time();
+        $stmt = $pdo->prepare('INSERT OR REPLACE INTO settings (setting_key, setting_value, updated_at) VALUES (:k, :v, :ts)');
+        foreach ($items as $k => $v) {
+            $stmt->execute([
+                ':k' => (string)$k,
+                ':v' => (string)$v,
+                ':ts' => $now
+            ]);
+        }
+        echo json_encode(['ok' => true]);
         exit;
     }
 
@@ -207,3 +236,4 @@ try {
         'error' => $e->getMessage()
     ], JSON_UNESCAPED_UNICODE);
 }
+
