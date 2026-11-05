@@ -994,56 +994,90 @@
                 setSelectedGpsDev(dev);
             };
 
-            const fetchOsrmDepotRoutes = async () => {
-                if (!data.length || isForecastMode) return;
+            const fetchOsrmTourRoads = async (forceRefresh = false) => {
+                if (!data.length || isFetchingOsrm) return;
                 setIsFetchingOsrm(true);
-                const grouped = data.filter(r => !r.isForecast).reduce((acc, row) => { if (!acc[row.tour]) acc[row.tour] = []; acc[row.tour].push(row); return acc; }, {});
 
-                const newRoutings = { ...osrmRoutings };
-                for (const tour of Object.keys(grouped)) {
-                    if (!grouped[tour] || newRoutings[tour]) continue;
-                    const rows = grouped[tour];
-                    const uniqueStops = new Map();
-                    rows.forEach(r => {
-                        if (r.startTime && !uniqueStops.has(r.seq) && r.lat && r.lng && (r.lat !== 0)) {
-                            uniqueStops.set(r.seq, { start: r.startTime, lat: r.lat, lng: r.lng });
+                const grouped = data.reduce((acc, row) => {
+                    if (row.tour === 'Prognosen (Vorladung)') return acc;
+                    if (!acc[row.tour]) acc[row.tour] = [];
+                    acc[row.tour].push(row);
+                    return acc;
+                }, {});
+
+                const newRoutings = forceRefresh ? {} : { ...osrmRoutings };
+                const tourList = Object.keys(grouped);
+
+                for (const tour of tourList) {
+                    const rows = grouped[tour] || [];
+                    // Deduplicate stops by normalized address or seq, preserving stop sequence order
+                    const seenKeys = new Set();
+                    const orderedStops = [];
+                    rows.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0)).forEach(r => {
+                        if (!r.lat || !r.lng || r.lat === 0) return;
+                        const k = normalizeAddressKey(r.street, r.postalCode, r.city) || `${r.lat.toFixed(4)}_${r.lng.toFixed(4)}`;
+                        if (!seenKeys.has(k)) {
+                            seenKeys.add(k);
+                            orderedStops.push({ seq: r.seq, lat: r.lat, lng: r.lng, key: k });
                         }
                     });
-                    const sorted = Array.from(uniqueStops.values()).sort((a, b) => a.start - b.start);
-                    if (sorted.length === 0) continue;
 
-                    const firstS = sorted[0];
-                    const lastS = sorted[sorted.length - 1];
+                    if (orderedStops.length === 0) continue;
+
+                    // Signature of current stop order so we only re-fetch when stops or sequence changed
+                    const sig = orderedStops.map(s => `${s.lat.toFixed(4)},${s.lng.toFixed(4)}`).join(';');
+                    if (!forceRefresh && newRoutings[tour] && newRoutings[tour].sig === sig && newRoutings[tour].fullRoadGeom) {
+                        continue;
+                    }
 
                     try {
-                        const resIn = await fetch(`https://router.project-osrm.org/route/v1/driving/${DEPOT_LNG},${DEPOT_LAT};${firstS.lng},${firstS.lat}?overview=simplified&geometries=geojson`);
-                        const dataIn = await resIn.json();
-                        let inDur = 0, inDist = 0, inGeom = null;
-                        if (dataIn.routes && dataIn.routes[0]) {
-                            inDur = Math.ceil(dataIn.routes[0].duration / 60);
-                            inDist = (dataIn.routes[0].distance / 1000).toFixed(1);
-                            inGeom = dataIn.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+                        // Build full coordinate chain: Depot -> Stop 1 -> Stop 2 -> ... -> Stop N (cap at 65 waypoints for OSRM URL length)
+                        const waypoints = [{ lat: DEPOT_LAT, lng: DEPOT_LNG }, ...orderedStops.slice(0, 65)];
+                        const coordString = waypoints.map(w => `${w.lng.toFixed(5)},${w.lat.toFixed(5)}`).join(';');
+                        const resRoad = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordString}?overview=full&geometries=geojson&steps=false`);
+                        if (resRoad.ok) {
+                            const dataRoad = await resRoad.json();
+                            if (dataRoad.routes && dataRoad.routes[0]) {
+                                const routeObj = dataRoad.routes[0];
+                                const fullRoadGeom = routeObj.geometry.coordinates.map(c => [c[1], c[0]]);
+                                const totalRoadKm = (routeObj.distance / 1000).toFixed(1);
+                                const totalRoadMins = Math.ceil(routeObj.duration / 60);
+                                const legData = (routeObj.legs || []).map(l => ({
+                                    distanceKm: l.distance / 1000,
+                                    driveTime: Math.max(1, Math.ceil(l.duration / 60))
+                                }));
+                                newRoutings[tour] = {
+                                    sig,
+                                    fullRoadGeom,
+                                    totalRoadKm,
+                                    totalRoadMins,
+                                    legData
+                                };
+                                setOsrmRoutings({ ...newRoutings });
+                            }
                         }
-
-                        await new Promise(r => setTimeout(r, 100));
-
-                        const resOut = await fetch(`https://router.project-osrm.org/route/v1/driving/${lastS.lng},${lastS.lat};${DEPOT_LNG},${DEPOT_LAT}?overview=simplified&geometries=geojson`);
-                        const dataOut = await resOut.json();
-                        let outDur = 0, outDist = 0, outGeom = null;
-                        if (dataOut.routes && dataOut.routes[0]) {
-                            outDur = Math.ceil(dataOut.routes[0].duration / 60);
-                            outDist = (dataOut.routes[0].distance / 1000).toFixed(1);
-                            outGeom = dataOut.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                        }
-
-                        newRoutings[tour] = { inDur, inDist, inGeom, outDur, outDist, outGeom };
-                        await new Promise(r => setTimeout(r, 100));
-                    } catch (e) { console.error("OSRM Error", e); }
+                        await new Promise(r => setTimeout(r, 120));
+                    } catch (e) {
+                        console.error("OSRM Tour Road Error", tour, e);
+                    }
                 }
 
                 setOsrmRoutings({ ...newRoutings });
                 setIsFetchingOsrm(false);
             };
+
+            const fetchOsrmDepotRoutes = () => fetchOsrmTourRoads(true);
+
+            // Auto-fetch real road geometries whenever distributed tours exist
+            useEffect(() => {
+                const assignedTours = tours.filter(t => t !== 'Prognosen (Vorladung)');
+                if (assignedTours.length > 0 && data.length > 0) {
+                    const timer = setTimeout(() => {
+                        fetchOsrmTourRoads(false);
+                    }, 250);
+                    return () => clearTimeout(timer);
+                }
+            }, [tours, data]);
 
             const clearData = async () => {
                 if (confirm('Möchten Sie alle Daten wirklich zurücksetzen? (Löscht auch die Speicherung im Browser)')) {
@@ -1792,9 +1826,19 @@
                     let totalKm = 0;
                     let slaConflicts = 0;
                     let tightStops = 0;
+                    const cachedOsrm = osrmRoutings[tName];
 
                     const stopSchedule = uniqueStops.map((st, idx) => {
-                        const { distanceKm, driveTime } = calculateDistanceAndDriveTime(prevLat, prevLng, st.lat, st.lng);
+                        let distanceKm = 0;
+                        let driveTime = 0;
+                        if (cachedOsrm && cachedOsrm.legData && cachedOsrm.legData[idx]) {
+                            distanceKm = cachedOsrm.legData[idx].distanceKm;
+                            driveTime = cachedOsrm.legData[idx].driveTime;
+                        } else {
+                            const fallback = calculateDistanceAndDriveTime(prevLat, prevLng, st.lat, st.lng);
+                            distanceKm = fallback.distanceKm * 1.28; // Real-road detour factor when OSRM is still loading
+                            driveTime = fallback.driveTime;
+                        }
                         totalKm += distanceKm;
                         curMins += driveTime;
                         const etaH = Math.floor(curMins / 60);
@@ -1840,6 +1884,7 @@
                         tour: tName,
                         isPool,
                         color,
+                        hasRealRoad: !!(cachedOsrm && cachedOsrm.fullRoadGeom),
                         totalPackages: rows.length,
                         totalStops: uniqueStops.length,
                         count0900,
@@ -1847,7 +1892,7 @@
                         count1200,
                         countEod,
                         countBdr,
-                        totalKm: totalKm.toFixed(1),
+                        totalKm: (cachedOsrm && cachedOsrm.totalRoadKm) ? cachedOsrm.totalRoadKm : totalKm.toFixed(1),
                         finishStr,
                         slaConflicts,
                         tightStops,
@@ -1858,7 +1903,7 @@
                         vehicle: (tourDriverMeta[tName] && tourDriverMeta[tName].vehicle) || ''
                     };
                 });
-            }, [data, tours, routeStartTime, serviceStopDuration, tourDriverMeta]);
+            }, [data, tours, routeStartTime, serviceStopDuration, tourDriverMeta, osrmRoutings]);
 
             const handleCopyDriverWhatsApp = (tourSummary) => {
                 if (!tourSummary) return;
@@ -2292,21 +2337,18 @@
                             activeHighlightLine = highlightLine;
                         }
                     }
-                    // Draw connecting route polylines for all concrete assigned tours (even in Forecast mode, except unassigned pool)
-                    if (latLngs.length > 1 && tour !== 'Prognosen (Vorladung)' && !hasIdle) {
-                        window.L.polyline(latLngs, { color: lineColor, weight: 3.5, opacity: 0.85 }).addTo(layerGroup.current);
+                    // Draw REAL ROAD geometry from OSRM when available, otherwise temporary dashed straight line while loading
+                    if (tour !== 'Prognosen (Vorladung)' && !hasIdle) {
+                        if (osrmRoutings[tour] && osrmRoutings[tour].fullRoadGeom && osrmRoutings[tour].fullRoadGeom.length > 1) {
+                            // Subtle dark casing + colored road line for high contrast on Google Maps
+                            window.L.polyline(osrmRoutings[tour].fullRoadGeom, { color: '#1e293b', weight: 6, opacity: 0.35 }).addTo(layerGroup.current);
+                            window.L.polyline(osrmRoutings[tour].fullRoadGeom, { color: lineColor, weight: 4, opacity: 0.92 }).addTo(layerGroup.current);
+                        } else if (latLngs.length > 1) {
+                            window.L.polyline(latLngs, { color: lineColor, dashArray: '6, 6', weight: 2.5, opacity: 0.65 }).addTo(layerGroup.current);
+                        }
                     }
                     if (highlightLine && !isForecastMode) {
                         window.L.polyline(highlightLine, { color: '#ff0000', dashArray: '10, 10', weight: 4, opacity: 1 }).addTo(layerGroup.current);
-                    }
-
-                    if (osrmRoutings[tour] && !isForecastMode && !hasIdle) {
-                        if (osrmRoutings[tour].inGeom) {
-                            window.L.polyline(osrmRoutings[tour].inGeom, { color: '#3b82f6', dashArray: '6, 8', weight: 3, opacity: 0.9 }).addTo(layerGroup.current);
-                        }
-                        if (osrmRoutings[tour].outGeom) {
-                            window.L.polyline(osrmRoutings[tour].outGeom, { color: '#ec4899', dashArray: '6, 8', weight: 3, opacity: 0.9 }).addTo(layerGroup.current);
-                        }
                     }
                 });
 
@@ -2439,9 +2481,14 @@
                                     🤖 1-Klick Auto-Disposition
                                 </button>
                             )}
-                            {data.length > 0 && !isForecastMode && (
-                                <button onClick={fetchOsrmDepotRoutes} disabled={isFetchingOsrm} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isFetchingOsrm ? 'bg-white/10 text-gray-400' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}>
-                                    {isFetchingOsrm ? 'OSRM...' : '⛐ Depotwege'}
+                            {data.length > 0 && concreteToursCount > 0 && (
+                                <button
+                                    onClick={() => fetchOsrmTourRoads(true)}
+                                    disabled={isFetchingOsrm}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isFetchingOsrm ? 'bg-white/10 text-gray-400' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}
+                                    title="Berechnet für alle Touren die echten Straßenverläufe, Autobahn-Routen und Fahrzeiten über OSRM"
+                                >
+                                    {isFetchingOsrm ? '🛣️ Lade Straßen...' : '🛣️ Straßen-Routen (OSRM)'}
                                 </button>
                             )}
                             <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg border border-white/15">
