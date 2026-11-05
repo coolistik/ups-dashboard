@@ -1,15 +1,8 @@
-DirectoryIndex UPS_Dashboard.html index.html
+DirectoryIndex index.html UPS_Dashboard.html
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteBase /sandbox/
 
-    # Если запрашиваемый файл или папка существуют — отдаём напрямую
-    RewriteCond %{REQUEST_FILENAME} -f [OR]
-    RewriteCond %{REQUEST_FILENAME} -d
-    RewriteRule ^ - [L]
-
-    # Поддержка обращения без расширения .html (например, /sandbox/UPS_Dashboard)
-    RewriteCond %{REQUEST_FILENAME}.html -f
-    RewriteRule ^(.+?)/?$ $1.html [L]
+    RewriteRule ^$ UPS_Dashboard.html [L]
+    RewriteRule ^UPS_Dashboard/?$ UPS_Dashboard.html [NC,L]
 </IfModule>
