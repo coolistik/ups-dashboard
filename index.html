@@ -569,12 +569,41 @@
             const [gpsCheckMethod, setGpsCheckMethod] = useState('');
             const [selectedGpsDev, setSelectedGpsDev] = useState(null);
 
+            // --- Morning Express Disposition States ---
+            const [activeAssignTour, setActiveAssignTour] = useState('');
+            const [clickAssignScope, setClickAssignScope] = useState('stop'); // 'off' | 'stop' | 'plz'
+            const [newTourInput, setNewTourInput] = useState('');
+            const [autoClusterCount, setAutoClusterCount] = useState(6);
+            const [autoClusterMode, setAutoClusterMode] = useState('corridors'); // 'corridors' | 'kmeans'
+            const [dispoFilterTour, setDispoFilterTour] = useState('Alle');
+            const [dispoFilterCommit, setDispoFilterCommit] = useState('Alle');
+            const [dispoSearch, setDispoSearch] = useState('');
+            const [tourDriverMeta, setTourDriverMeta] = useState(() => {
+                try {
+                    return JSON.parse(safeStorage.getItem('ups_tour_driver_meta') || '{}');
+                } catch (_) { return {}; }
+            });
+            const [manifestModalTour, setManifestModalTour] = useState(null);
+            const [toastMessage, setToastMessage] = useState(null);
+
+            const showToast = (msg) => {
+                setToastMessage(msg);
+                setTimeout(() => setToastMessage(prev => prev === msg ? null : prev), 3200);
+            };
+
+            const saveTourDriverMeta = (nextMeta) => {
+                setTourDriverMeta(nextMeta);
+                safeStorage.setItem('ups_tour_driver_meta', JSON.stringify(nextMeta));
+                GeoDB.saveSettings({ tour_driver_meta: JSON.stringify(nextMeta) });
+            };
+
             useEffect(() => {
                 const handleKeyDown = (e) => {
                     if (e.key === 'Escape') {
                         setSelectedGpsDev(null);
                         setStreetViewStop(null);
                         setShowApiModal(false);
+                        setManifestModalTour(null);
                     }
                 };
                 window.addEventListener('keydown', handleKeyDown);
@@ -593,6 +622,12 @@
                         if (GeoDB.serverSettings && GeoDB.serverSettings.map_tile_type) {
                             setMapTileType(GeoDB.serverSettings.map_tile_type);
                         }
+                        if (GeoDB.serverSettings && GeoDB.serverSettings.tour_driver_meta) {
+                            try {
+                                const parsedMeta = JSON.parse(GeoDB.serverSettings.tour_driver_meta);
+                                setTourDriverMeta(parsedMeta);
+                            } catch (_) {}
+                        }
                         const oldCache = safeStorage.getItem('ups_geo_cache');
                         if (oldCache) {
                             try {
@@ -609,13 +644,16 @@
                         const restoredReport = await GeoDB.getReport('current_ups_data');
                         const restoredRows = restoredReport && Array.isArray(restoredReport.data) ? restoredReport.data : (Array.isArray(restoredReport) ? restoredReport : null);
                         if (restoredRows && restoredRows.length > 0) {
-                            setData(restoredRows);
+                            const withIds = restoredRows.map((r, idx) => ({ ...r, _uid: r._uid || `pkg_${idx}_${r.trackingNr || r.seq}` }));
+                            setData(withIds);
                             if (restoredReport && restoredReport.fileName) setFileName(restoredReport.fileName);
-                            const hasFc = restoredRows.some(r => r.isForecast);
+                            const hasFc = withIds.some(r => r.isForecast);
                             setIsForecastMode(hasFc);
-                            const ut = [...new Set(restoredRows.map(r => r.tour))].sort();
+                            const ut = [...new Set(withIds.map(r => r.tour))].sort();
                             setTours(ut);
                             setSelectedTours(ut);
+                            const firstNonPool = ut.find(t => t !== 'Prognosen (Vorladung)');
+                            if (firstNonPool) setActiveAssignTour(firstNonPool);
                         }
                     } catch (e) { console.error('DB Init failed', e); }
                 };
@@ -1292,6 +1330,7 @@
                 }
 
                 // Мгновенно отображаем данные в дашборде (не блокируя интерфейс сетевым геокодингом!)
+                combinedData = combinedData.map((r, idx) => ({ ...r, _uid: r._uid || `pkg_${idx}_${r.trackingNr || r.seq}` }));
                 const uniqueTours = [...new Set(combinedData.map(r => r.tour))].sort();
                 setData(combinedData);
                 setTours(uniqueTours);
@@ -1376,6 +1415,497 @@
             };
 
             const clearTourSelection = () => setSelectedTours([]);
+
+            // ============================================================================
+            // MORNING EXPRESS DISPOSITION ENGINE (Smart Clustering, Tour Board & SLA ETA)
+            // ============================================================================
+            const getRegionalCorridorTour = (plzStr, lat, lng) => {
+                const plzNum = parseInt(String(plzStr || '').trim(), 10);
+                if (!isNaN(plzNum)) {
+                    // 1. Dresden-Zentrum & Altstadt / Neustadt
+                    if ((plzNum >= 1067 && plzNum <= 1099) || (plzNum >= 1307 && plzNum <= 1309)) {
+                        return 'T-01 DD-Zentrum';
+                    }
+                    // 2. Dresden-Nord & Flughafen / Klotzsche / Radeberg / Ottendorf / Kamenz
+                    if ((plzNum >= 1108 && plzNum <= 1139) || (plzNum >= 1454 && plzNum <= 1499) || (plzNum >= 1896 && plzNum <= 1936)) {
+                        return 'T-02 DD-Nord & Airport';
+                    }
+                    // 3. Dresden-West / Friedrichstadt / Cotta / Cossebaude / Radebeul / Coswig
+                    if ((plzNum >= 1156 && plzNum <= 1169) || (plzNum >= 1445 && plzNum <= 1449) || plzNum === 1640) {
+                        return 'T-03 DD-West & Radebeul';
+                    }
+                    // 4. Dresden-Süd / Plauen / Prohlis / Lockwitz / Bannewitz
+                    if ((plzNum >= 1187 && plzNum <= 1259) || plzNum === 1728) {
+                        return 'T-04 DD-Süd & Prohlis';
+                    }
+                    // 5. Dresden-Ost / Blasewitz / Laubegast / Bühlau / Weißig
+                    if (plzNum >= 1277 && plzNum <= 1328) {
+                        return 'T-05 DD-Ost & Elbhang';
+                    }
+                    // 6. West-Achse: Meißen / Weinböhla / Nossen / Riesa / Großenhain
+                    if ((plzNum >= 1558 && plzNum <= 1639) || (plzNum >= 1662 && plzNum <= 1689)) {
+                        return 'T-06 Meißen & Riesa';
+                    }
+                    // 7. Süd-West: Freital / Wilsdruff / Tharandt / Dippoldiswalde / Altenberg
+                    if ((plzNum >= 1705 && plzNum <= 1723) || (plzNum >= 1731 && plzNum <= 1778)) {
+                        return 'T-07 Freital & Erzgebirge';
+                    }
+                    // 8. Süd-Ost: Heidenau / Pirna / Sächsische Schweiz / Sebnitz
+                    if (plzNum >= 1780 && plzNum <= 1877) {
+                        return 'T-08 Pirna & Heidenau';
+                    }
+                }
+                // Fallback via coordinates relative to Dresden center
+                if (lat && lng) {
+                    if (lng < 13.60) return 'T-06 Meißen & Riesa';
+                    if (lng > 13.86) return 'T-08 Pirna & Heidenau';
+                    if (lat > 51.10) return 'T-02 DD-Nord & Airport';
+                    if (lat < 51.01) return 'T-04 DD-Süd & Prohlis';
+                }
+                return 'T-01 DD-Zentrum';
+            };
+
+            const optimizeTourStopSequence = (rowsForTour) => {
+                if (!rowsForTour || rowsForTour.length === 0) return [];
+                const stopGroups = new Map();
+                rowsForTour.forEach(r => {
+                    const key = normalizeAddressKey(r.street, r.postalCode, r.city) || `${(r.lat || 0).toFixed(4)}_${(r.lng || 0).toFixed(4)}`;
+                    if (!stopGroups.has(key)) {
+                        stopGroups.set(key, { key, lat: r.lat, lng: r.lng, commit: r.commit || 'EOD', items: [r] });
+                    } else {
+                        const g = stopGroups.get(key);
+                        g.items.push(r);
+                        const order = { '09:00': 1, '10:30': 2, '12:00': 3, '14:00': 4, 'EOD': 5 };
+                        if ((order[r.commit] || 9) < (order[g.commit] || 9)) {
+                            g.commit = r.commit;
+                        }
+                    }
+                });
+
+                const unvisited = Array.from(stopGroups.values());
+                const commitWeight = (c) => c === '09:00' ? 1 : c === '10:30' ? 2 : (c === '12:00' || c === '14:00') ? 3 : 4;
+                const orderedGroups = [];
+                let curLat = DEPOT_LAT;
+                let curLng = DEPOT_LNG;
+
+                while (unvisited.length > 0) {
+                    const minTier = Math.min(...unvisited.map(u => commitWeight(u.commit)));
+                    const candidates = unvisited.filter(u => commitWeight(u.commit) === minTier);
+                    let bestIdx = 0;
+                    let bestDist = Infinity;
+                    candidates.forEach(cand => {
+                        const { distanceKm } = calculateDistanceAndDriveTime(curLat, curLng, cand.lat, cand.lng);
+                        if (distanceKm < bestDist) {
+                            bestDist = distanceKm;
+                            bestIdx = unvisited.indexOf(cand);
+                        }
+                    });
+                    const chosen = unvisited.splice(bestIdx, 1)[0];
+                    orderedGroups.push(chosen);
+                    curLat = chosen.lat || curLat;
+                    curLng = chosen.lng || curLng;
+                }
+
+                const result = [];
+                orderedGroups.forEach((g, idx) => {
+                    const newSeq = idx + 1;
+                    g.items.forEach(item => {
+                        result.push({ ...item, seq: newSeq });
+                    });
+                });
+                return result;
+            };
+
+            const persistUpdatedData = async (nextData, nextToursList = null) => {
+                const computedTours = nextToursList || [...new Set([...tours, ...nextData.map(r => r.tour)])].filter(t => {
+                    if (t === 'Prognosen (Vorladung)') return nextData.some(r => r.tour === t);
+                    return true;
+                }).sort();
+                setData(nextData);
+                setTours(computedTours);
+                setSelectedTours(prev => {
+                    const merged = [...new Set([...prev.filter(t => computedTours.includes(t)), ...computedTours])];
+                    return merged.length > 0 ? merged : computedTours;
+                });
+                try {
+                    await GeoDB.saveReport('current_ups_data', nextData, fileName || 'Disposition', isForecastMode);
+                } catch (e) {
+                    console.error('Persist error', e);
+                }
+            };
+
+            const handleCreateNewTour = async (customName) => {
+                const rawName = (customName !== undefined ? customName : newTourInput).trim();
+                const finalName = rawName || `Tour ${tours.filter(t => t !== 'Prognosen (Vorladung)').length + 1}`;
+                if (!tours.includes(finalName)) {
+                    const nextTours = [...tours, finalName].sort();
+                    setTours(nextTours);
+                    setSelectedTours(prev => [...new Set([...prev, finalName])]);
+                }
+                setActiveAssignTour(finalName);
+                setNewTourInput('');
+                showToast(`✓ Tour "${finalName}" bereit zur Zuweisung`);
+            };
+
+            const handleAssignStopOrPlz = async (targetItem, targetTourName, mode = 'stop') => {
+                if (!targetTourName) {
+                    showToast('⚠️ Bitte zuerst eine Ziel-Tour auswählen oder anlegen!');
+                    return;
+                }
+                const targetAddrKey = normalizeAddressKey(targetItem.street, targetItem.postalCode, targetItem.city);
+                const targetPlz = targetItem.postalCode;
+                let movedCount = 0;
+
+                let nextData = data.map(row => {
+                    const match = mode === 'plz'
+                        ? (row.postalCode === targetPlz && row.tour === targetItem.tour)
+                        : mode === 'single'
+                            ? (row._uid === targetItem._uid)
+                            : (normalizeAddressKey(row.street, row.postalCode, row.city) === targetAddrKey && row.tour === targetItem.tour);
+                    if (match) {
+                        movedCount++;
+                        return { ...row, tour: targetTourName };
+                    }
+                    return row;
+                });
+
+                // Re-sequence the target tour automatically so SLA order stays clean
+                const targetRows = optimizeTourStopSequence(nextData.filter(r => r.tour === targetTourName));
+                const otherRows = nextData.filter(r => r.tour !== targetTourName);
+                nextData = [...otherRows, ...targetRows];
+
+                await persistUpdatedData(nextData);
+                showToast(`⚡ ${movedCount} Sendung(en) → ${targetTourName}`);
+            };
+
+            const handleBulkAssignPlzToTour = async (plz, targetTourName, onlyFromUnassigned = false) => {
+                if (!targetTourName || !plz) return;
+                let movedCount = 0;
+                let nextData = data.map(row => {
+                    if (row.postalCode === plz && (!onlyFromUnassigned || row.tour === 'Prognosen (Vorladung)')) {
+                        movedCount++;
+                        return { ...row, tour: targetTourName };
+                    }
+                    return row;
+                });
+                const targetRows = optimizeTourStopSequence(nextData.filter(r => r.tour === targetTourName));
+                const otherRows = nextData.filter(r => r.tour !== targetTourName);
+                nextData = [...otherRows, ...targetRows];
+                await persistUpdatedData(nextData);
+                showToast(`📦 PLZ ${plz} (${movedCount} Pakete) → ${targetTourName}`);
+            };
+
+            const handleOptimizeSingleTour = async (tourName) => {
+                const targetRows = optimizeTourStopSequence(data.filter(r => r.tour === tourName));
+                const otherRows = data.filter(r => r.tour !== tourName);
+                const nextData = [...otherRows, ...targetRows];
+                await persistUpdatedData(nextData);
+                showToast(`🧭 Route für "${tourName}" nach SLA (09:00 → 10:30 → 12:00) & Bestweg optimiert!`);
+            };
+
+            const handleOptimizeAllTours = async () => {
+                const grouped = {};
+                data.forEach(r => {
+                    if (!grouped[r.tour]) grouped[r.tour] = [];
+                    grouped[r.tour].push(r);
+                });
+                let nextData = [];
+                Object.keys(grouped).forEach(tName => {
+                    if (tName === 'Prognosen (Vorladung)') {
+                        nextData = nextData.concat(grouped[tName]);
+                    } else {
+                        nextData = nextData.concat(optimizeTourStopSequence(grouped[tName]));
+                    }
+                });
+                await persistUpdatedData(nextData);
+                showToast(`⚡ Alle Touren nach SLA-Zeitfenstern & kürzester Strecke optimiert!`);
+            };
+
+            const handleResetAllToPool = async () => {
+                if (!confirm('Alle Sendungen wieder zurück in "Prognosen (Vorladung)" legen?')) return;
+                const nextData = data.map((r, i) => ({
+                    ...r,
+                    tour: 'Prognosen (Vorladung)',
+                    seq: i + 1
+                }));
+                setTours(['Prognosen (Vorladung)']);
+                setSelectedTours(['Prognosen (Vorladung)']);
+                setActiveAssignTour('');
+                setData(nextData);
+                await GeoDB.saveReport('current_ups_data', nextData, fileName || 'Disposition', isForecastMode);
+                showToast('↺ Alle Sendungen zurück im Pool "Prognosen (Vorladung)"');
+            };
+
+            const handleRunAutoDisposition = async (mode = autoClusterMode, numTours = autoClusterCount) => {
+                if (!data.length) return;
+                // Take either unassigned rows, or all rows if nothing is in Prognosen (Vorladung)
+                const hasPool = data.some(r => r.tour === 'Prognosen (Vorladung)');
+                const poolRows = hasPool ? data.filter(r => r.tour === 'Prognosen (Vorladung)') : [...data];
+                const fixedRows = hasPool ? data.filter(r => r.tour !== 'Prognosen (Vorladung)') : [];
+
+                if (poolRows.length === 0) return;
+
+                let assignedPool = [];
+                if (mode === 'corridors') {
+                    assignedPool = poolRows.map(r => ({
+                        ...r,
+                        tour: getRegionalCorridorTour(r.postalCode, r.lat, r.lng)
+                    }));
+                } else {
+                    // K-Means Geographic + SLA Balanced Clustering into `numTours` tours
+                    const k = Math.max(2, Math.min(20, Number(numTours) || 6));
+                    const stopMap = new Map();
+                    poolRows.forEach(r => {
+                        const key = normalizeAddressKey(r.street, r.postalCode, r.city) || `${r.lat}_${r.lng}`;
+                        if (!stopMap.has(key)) {
+                            stopMap.set(key, { key, lat: r.lat || DEPOT_LAT, lng: r.lng || DEPOT_LNG, rows: [r] });
+                        } else {
+                            stopMap.get(key).rows.push(r);
+                        }
+                    });
+                    const uniqueStops = Array.from(stopMap.values());
+                    // Sort stops by angle around Dresden center to initialize well-spread centroids
+                    const centerLat = uniqueStops.reduce((s, x) => s + x.lat, 0) / (uniqueStops.length || 1);
+                    const centerLng = uniqueStops.reduce((s, x) => s + x.lng, 0) / (uniqueStops.length || 1);
+                    uniqueStops.sort((a, b) => Math.atan2(a.lat - centerLat, a.lng - centerLng) - Math.atan2(b.lat - centerLat, b.lng - centerLng));
+
+                    const centroids = [];
+                    for (let i = 0; i < k; i++) {
+                        const pick = uniqueStops[Math.floor((i * uniqueStops.length) / k)] || { lat: DEPOT_LAT, lng: DEPOT_LNG };
+                        centroids.push({ lat: pick.lat, lng: pick.lng });
+                    }
+
+                    let assignments = new Array(uniqueStops.length).fill(0);
+                    for (let iter = 0; iter < 8; iter++) {
+                        const clusterSums = Array.from({ length: k }, () => ({ lat: 0, lng: 0, count: 0 }));
+                        uniqueStops.forEach((st, idx) => {
+                            let bestC = 0;
+                            let bestDist = Infinity;
+                            centroids.forEach((c, cIdx) => {
+                                const d = Math.hypot(st.lat - c.lat, (st.lng - c.lng) * 0.7);
+                                if (d < bestDist) {
+                                    bestDist = d;
+                                    bestC = cIdx;
+                                }
+                            });
+                            assignments[idx] = bestC;
+                            clusterSums[bestC].lat += st.lat;
+                            clusterSums[bestC].lng += st.lng;
+                            clusterSums[bestC].count += 1;
+                        });
+                        for (let cIdx = 0; cIdx < k; cIdx++) {
+                            if (clusterSums[cIdx].count > 0) {
+                                centroids[cIdx].lat = clusterSums[cIdx].lat / clusterSums[cIdx].count;
+                                centroids[cIdx].lng = clusterSums[cIdx].lng / clusterSums[cIdx].count;
+                            }
+                        }
+                    }
+
+                    uniqueStops.forEach((st, idx) => {
+                        const tourLabel = `Tour ${String(assignments[idx] + 1).padStart(2, '0')}`;
+                        st.rows.forEach(r => {
+                            assignedPool.push({ ...r, tour: tourLabel });
+                        });
+                    });
+                }
+
+                // Group all rows by tour and optimize each tour's sequence (09:00 -> 10:30 -> 12:00 -> EOD)
+                const allCombined = [...fixedRows, ...assignedPool];
+                const byTour = {};
+                allCombined.forEach(r => {
+                    if (!byTour[r.tour]) byTour[r.tour] = [];
+                    byTour[r.tour].push(r);
+                });
+
+                let finalData = [];
+                const finalTours = Object.keys(byTour).sort();
+                finalTours.forEach(tName => {
+                    finalData = finalData.concat(optimizeTourStopSequence(byTour[tName]));
+                });
+
+                setData(finalData);
+                setTours(finalTours);
+                setSelectedTours(finalTours);
+                if (finalTours.length > 0) setActiveAssignTour(finalTours[0]);
+                await GeoDB.saveReport('current_ups_data', finalData, fileName || 'Disposition', isForecastMode);
+                showToast(`🤖 Smart Auto-Disposition abgeschlossen: ${poolRows.length} Sendungen auf ${finalTours.length} Touren verteilt & SLA-optimiert!`);
+            };
+
+            // Live Tour Board Summary & SLA Feasibility Calculation per Tour
+            const dispositionTourBoard = useMemo(() => {
+                if (!data.length) return [];
+                const [startH, startM] = (routeStartTime || '08:00').split(':').map(Number);
+                const baseStartMins = (startH || 8) * 60 + (startM || 0);
+                const stopDur = Number(serviceStopDuration) || 3;
+
+                const allTourNames = [...new Set([...tours, ...data.map(r => r.tour)])].sort((a, b) => {
+                    if (a === 'Prognosen (Vorladung)') return -1;
+                    if (b === 'Prognosen (Vorladung)') return 1;
+                    return a.localeCompare(b);
+                });
+
+                return allTourNames.map((tName, tIdx) => {
+                    const rows = data.filter(r => r.tour === tName).sort((a, b) => a.seq - b.seq);
+                    const isPool = tName === 'Prognosen (Vorladung)';
+                    const stopMap = new Map();
+                    let count0900 = 0, count1030 = 0, count1200 = 0, countEod = 0, countBdr = 0;
+
+                    rows.forEach(r => {
+                        if (r.commit === '09:00') count0900++;
+                        else if (r.commit === '10:30') count1030++;
+                        else if (r.commit === '12:00' || r.commit === '14:00') count1200++;
+                        else countEod++;
+                        if (r.status && r.status.includes('DRIVER RELEASE')) countBdr++;
+
+                        const key = normalizeAddressKey(r.street, r.postalCode, r.city) || `${r.seq}_${r.lat}`;
+                        if (!stopMap.has(key)) {
+                            stopMap.set(key, {
+                                key,
+                                seq: r.seq,
+                                lat: r.lat,
+                                lng: r.lng,
+                                postalCode: r.postalCode,
+                                city: r.city,
+                                street: r.street,
+                                recipient: r.recipient,
+                                commit: r.commit || 'EOD',
+                                service: r.service,
+                                pkgCount: 1,
+                                rows: [r]
+                            });
+                        } else {
+                            const st = stopMap.get(key);
+                            st.pkgCount++;
+                            st.rows.push(r);
+                            const order = { '09:00': 1, '10:30': 2, '12:00': 3, '14:00': 4, 'EOD': 5 };
+                            if ((order[r.commit] || 9) < (order[st.commit] || 9)) {
+                                st.commit = r.commit;
+                                st.service = r.service;
+                            }
+                        }
+                    });
+
+                    const uniqueStops = Array.from(stopMap.values());
+                    let curMins = baseStartMins;
+                    let prevLat = DEPOT_LAT;
+                    let prevLng = DEPOT_LNG;
+                    let totalKm = 0;
+                    let slaConflicts = 0;
+                    let tightStops = 0;
+
+                    const stopSchedule = uniqueStops.map((st, idx) => {
+                        const { distanceKm, driveTime } = calculateDistanceAndDriveTime(prevLat, prevLng, st.lat, st.lng);
+                        totalKm += distanceKm;
+                        curMins += driveTime;
+                        const etaH = Math.floor(curMins / 60);
+                        const etaM = curMins % 60;
+                        const etaStr = `${String(etaH).padStart(2, '0')}:${String(etaM).padStart(2, '0')}`;
+
+                        let commitMins = 23 * 60 + 59;
+                        if (st.commit && st.commit.includes(':')) {
+                            const [ch, cm] = st.commit.split(':').map(Number);
+                            commitMins = ch * 60 + cm;
+                        }
+                        const bufferMins = commitMins - curMins;
+                        if (!isPool && st.commit !== 'EOD') {
+                            if (bufferMins < 0) slaConflicts++;
+                            else if (bufferMins <= 12) tightStops++;
+                        }
+                        curMins += stopDur;
+                        prevLat = st.lat || prevLat;
+                        prevLng = st.lng || prevLng;
+
+                        return {
+                            ...st,
+                            stopIndex: idx + 1,
+                            distanceKm: distanceKm.toFixed(1),
+                            driveTime,
+                            etaStr,
+                            bufferMins
+                        };
+                    });
+
+                    const finishStr = stopSchedule.length > 0 ? stopSchedule[stopSchedule.length - 1].etaStr : routeStartTime;
+                    const navStops = stopSchedule.slice(0, 10);
+                    const waypointsStr = navStops.slice(0, -1).map(s => `${s.lat},${s.lng}`).join('|');
+                    const lastStop = navStops[navStops.length - 1];
+                    const googleNavUrl = lastStop
+                        ? `https://www.google.com/maps/dir/?api=1&origin=${DEPOT_LAT},${DEPOT_LNG}&destination=${lastStop.lat},${lastStop.lng}${waypointsStr ? '&waypoints=' + encodeURIComponent(waypointsStr) : ''}&travelmode=driving`
+                        : '';
+
+                    const plzSet = [...new Set(rows.map(r => r.postalCode).filter(Boolean))];
+                    const color = isPool ? '#64748b' : TOUR_LINE_COLORS[tIdx % TOUR_LINE_COLORS.length];
+
+                    return {
+                        tour: tName,
+                        isPool,
+                        color,
+                        totalPackages: rows.length,
+                        totalStops: uniqueStops.length,
+                        count0900,
+                        count1030,
+                        count1200,
+                        countEod,
+                        countBdr,
+                        totalKm: totalKm.toFixed(1),
+                        finishStr,
+                        slaConflicts,
+                        tightStops,
+                        plzList: plzSet,
+                        googleNavUrl,
+                        stopSchedule,
+                        driverName: (tourDriverMeta[tName] && tourDriverMeta[tName].driver) || '',
+                        vehicle: (tourDriverMeta[tName] && tourDriverMeta[tName].vehicle) || ''
+                    };
+                });
+            }, [data, tours, routeStartTime, serviceStopDuration, tourDriverMeta]);
+
+            const handleCopyDriverWhatsApp = (tourSummary) => {
+                if (!tourSummary) return;
+                const lines = [
+                    `📦 *UPS EXPRESS-MANIFEST: ${tourSummary.tour}*`,
+                    tourSummary.driverName ? `👤 Fahrer: ${tourSummary.driverName}` : null,
+                    `⏱ Abfahrt Depot: ${routeStartTime} Uhr | Stopps: ${tourSummary.totalStops} (${tourSummary.totalPackages} Pakete) | ~${tourSummary.totalKm} km`,
+                    `🔴 09:00: ${tourSummary.count0900} | 🟣 10:30: ${tourSummary.count1030} | 🟠 12:00: ${tourSummary.count1200}`,
+                    `-----------------------------------`,
+                    ...tourSummary.stopSchedule.map(st =>
+                        `${st.stopIndex}. [${st.commit}] ETA ${st.etaStr} — ${st.postalCode} ${st.city}, ${st.street} ${st.recipient ? '(' + st.recipient + ')' : ''} [${st.pkgCount} Pkt]`
+                    ),
+                    `-----------------------------------`,
+                    tourSummary.googleNavUrl ? `🧭 Google Maps Route:\n${tourSummary.googleNavUrl}` : ''
+                ].filter(Boolean).join('\n');
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(lines);
+                    showToast(`📲 Fahrer-Manifest für "${tourSummary.tour}" in Zwischenablage kopiert (für WhatsApp / Telegram)!`);
+                }
+            };
+
+            const handleExportAllDispositionCSV = () => {
+                const exportRows = [];
+                dispositionTourBoard.forEach(tb => {
+                    tb.stopSchedule.forEach(st => {
+                        st.rows.forEach(r => {
+                            exportRows.push({
+                                Tour: tb.tour,
+                                Fahrer: tb.driverName || '',
+                                Stopp_Nr: st.stopIndex,
+                                Commit_SLA: st.commit,
+                                Prognose_ETA: st.etaStr,
+                                Puffer_Min: st.bufferMins,
+                                PLZ: r.postalCode,
+                                Ort: r.city,
+                                Strasse: r.street,
+                                Empfaenger: r.recipient || '',
+                                Tracking_Nr: r.trackingNr || '',
+                                Service: r.service || ''
+                            });
+                        });
+                    });
+                });
+                exportCSV('UPS_Express_Disposition_Tourenplan', exportRows);
+                showToast('📥 Kompletter Tourenplan als CSV exportiert!');
+            };
 
             const mapData = useMemo(() => {
                 if (!selectedTours.length || !data.length) return {};
@@ -1675,15 +2205,42 @@
                         const googlePlacesSearchUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((stop.recipient ? stop.recipient + ' ' : '') + (stop.street || '') + ' ' + (stop.postalCode || '') + ' ' + (stop.city || ''))}`;
 
                         const popupContent = document.createElement('div');
-                        popupContent.innerHTML = '<div style="font-family: sans-serif; min-width: 245px;"><div style="border-bottom: 2px solid ' + markerBgColor + '; padding-bottom: 6px; margin-bottom: 8px;"><strong style="color: #351C15; font-size: 14px;">Tour: ' + tour + ' | Seq: ' + stop.seq + '</strong>' + bdrBadge + '</div><div style="font-size: 12px; line-height: 1.6;">' + recipientLine + '<b>Ort:</b> ' + (stop.postalCode || '') + ' ' + stop.city + '<br/><b>Straße:</b> ' + stop.street + ' ' + stop.house + '<br/><b>Kunde:</b> ' + commercialStr + '<br/><b>Typ:</b> ' + (stop.type || 'Zustellung') + '<br/><b>Status:</b> ' + (stop.status || 'Offen') + '<br/><b>Service:</b> <span style="color: ' + markerBgColor + '; font-weight: bold;">' + (stop.service || 'STANDARD') + '</span></div><div style="background: #f8fafc; padding: 6px; border-radius: 4px; margin-top: 8px; font-size: 11px;"><div style="display: flex; justify-content: space-between;"><span>Soll-Zeit (Commit):</span> <b>' + (stop.commit || 'EOD') + '</b></div><div style="display: flex; justify-content: space-between;"><span>Ist-Zeit (Scanned):</span> <b>' + actualTime + '</b></div></div>' +
+                        const tourButtonsHtml = tours.filter(t => t !== tour).slice(0, 8).map(t =>
+                            `<button data-assign-tour="${t}" class="popup-tour-btn" style="padding:3px 6px;background:#f8fafc;color:#1e293b;border:1px solid #cbd5e1;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">→ ${t}</button>`
+                        ).join('');
+                        popupContent.innerHTML = '<div style="font-family: sans-serif; min-width: 255px;"><div style="border-bottom: 2px solid ' + markerBgColor + '; padding-bottom: 6px; margin-bottom: 8px;"><strong style="color: #351C15; font-size: 14px;">Tour: ' + tour + ' | Seq: #' + stop.seq + '</strong>' + bdrBadge + '</div><div style="font-size: 12px; line-height: 1.6;">' + recipientLine + '<b>Ort:</b> ' + (stop.postalCode || '') + ' ' + stop.city + '<br/><b>Straße:</b> ' + stop.street + ' ' + stop.house + '<br/><b>Kunde:</b> ' + commercialStr + '<br/><b>Service:</b> <span style="color: ' + markerBgColor + '; font-weight: bold;">' + (stop.service || 'STANDARD') + '</span></div><div style="background: #f8fafc; padding: 6px; border-radius: 4px; margin-top: 8px; font-size: 11px;"><div style="display: flex; justify-content: space-between;"><span>Soll-Zeit (SLA):</span> <b>' + (stop.commit || 'EOD') + '</b></div><div style="display: flex; justify-content: space-between;"><span>Ist-Zeit:</span> <b>' + actualTime + '</b></div></div>' +
+                        (tourButtonsHtml ? '<div style="margin-top:8px;padding:6px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;"><div style="font-size:9px;font-weight:900;color:#92400e;text-transform:uppercase;margin-bottom:4px;">⚡ Schnellzuweisung an Tour:</div><div style="display:flex;flex-wrap:wrap;gap:4px;">' + tourButtonsHtml + '</div></div>' : '') +
                         '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 8px;">' +
                         '<button id="btn-sv-' + tour + '-' + stop.seq + '" style="padding: 5px 6px; background-color: #0f172a; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 10px; font-weight: bold;">🛣️ Street View</button>' +
                         '<a href="' + googleNavStopUrl + '" target="_blank" style="padding: 5px 6px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 5px; text-align: center; font-size: 10px; font-weight: bold;">🧭 Google Nav</a>' +
                         '<a href="' + googlePlacesSearchUrl + '" target="_blank" style="grid-column: span 2; padding: 4px 6px; background-color: #f1f5f9; color: #334155; text-decoration: none; border: 1px solid #cbd5e1; border-radius: 5px; text-align: center; font-size: 10px; font-weight: bold;">🏢 Google Places / Firma & Einfahrt prüfen</a>' +
                         '</div>' +
                         '<hr style="margin: 8px 0; border: none; border-top: 1px solid #e2e8f0;"/><button id="btn-geocode-' + tour + '-' + stop.seq + '" style="width: 100%; padding: 6px; background-color: #FFB500; color: #351C15; border: none; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: bold;">📍 Google ROOFTOP & GPS prüfen</button><div id="result-' + tour + '-' + stop.seq + '" style="margin-top: 5px; font-size: 11px; font-weight: bold; display: none;"></div></div>';
-                        const marker = window.L.marker([stop.lat, stop.lng], { icon }).bindPopup(popupContent).addTo(layerGroup.current);
+                        const marker = window.L.marker([stop.lat, stop.lng], { icon }).addTo(layerGroup.current);
+
+                        marker.on('click', (e) => {
+                            if (activeAssignTour && clickAssignScope !== 'off') {
+                                window.L.DomEvent.stopPropagation(e);
+                                handleAssignStopOrPlz(stop, activeAssignTour, clickAssignScope === 'plz' ? 'plz' : 'stop');
+                                return;
+                            }
+                        });
+
+                        if (!activeAssignTour || clickAssignScope === 'off') {
+                            marker.bindPopup(popupContent);
+                        }
+
                         marker.on('popupopen', () => {
+                            const assignBtns = popupContent.querySelectorAll('.popup-tour-btn');
+                            assignBtns.forEach(b => {
+                                b.onclick = () => {
+                                    const targetT = b.getAttribute('data-assign-tour');
+                                    if (targetT) {
+                                        marker.closePopup();
+                                        handleAssignStopOrPlz(stop, targetT, 'stop');
+                                    }
+                                };
+                            });
                             const btnSv = document.getElementById('btn-sv-' + tour + '-' + stop.seq);
                             if (btnSv) {
                                 btnSv.onclick = () => {
@@ -1735,7 +2292,10 @@
                             activeHighlightLine = highlightLine;
                         }
                     }
-                    if (latLngs.length > 1 && !isForecastMode && !hasIdle) window.L.polyline(latLngs, { color: lineColor, weight: 4, opacity: 0.8 }).addTo(layerGroup.current);
+                    // Draw connecting route polylines for all concrete assigned tours (even in Forecast mode, except unassigned pool)
+                    if (latLngs.length > 1 && tour !== 'Prognosen (Vorladung)' && !hasIdle) {
+                        window.L.polyline(latLngs, { color: lineColor, weight: 3.5, opacity: 0.85 }).addTo(layerGroup.current);
+                    }
                     if (highlightLine && !isForecastMode) {
                         window.L.polyline(highlightLine, { color: '#ff0000', dashArray: '10, 10', weight: 4, opacity: 1 }).addTo(layerGroup.current);
                     }
@@ -1750,7 +2310,15 @@
                     }
                 });
 
-                if (isForecastMode && window.L.heatLayer) {
+                // Depot Marker (Klipphausen/Dresden)
+                const depotIcon = window.L.divIcon({
+                    className: 'depot-div-icon',
+                    html: '<div style="background:#351C15;color:#FFB500;border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:900;border:2px solid #FFB500;box-shadow:0 3px 8px rgba(0,0,0,0.4);" title="UPS Depot Klipphausen">🏭</div>',
+                    iconSize: [28, 28], iconAnchor: [14, 14]
+                });
+                window.L.marker([DEPOT_LAT, DEPOT_LNG], { icon: depotIcon }).bindPopup('<b>🏭 UPS Center / Depot Klipphausen</b><br/>Startpunkt für SLA-Prognose').addTo(layerGroup.current);
+
+                if (isForecastMode && tours.length === 1 && tours[0] === 'Prognosen (Vorladung)' && window.L.heatLayer) {
                     const heatData = allLatLngs.map(ll => [ll[0], ll[1], 0.6]);
                     if (heatData.length > 0 && mapInstance.current) {
                         window.L.heatLayer(heatData, { radius: 35, blur: 25, maxZoom: 14 }).addTo(layerGroup.current);
@@ -1760,21 +2328,34 @@
                 if (allLatLngs.length > 0) {
                     if (activeHighlightLine) {
                         mapInstance.current.fitBounds(window.L.latLngBounds(activeHighlightLine), { padding: [100, 100], maxZoom: 16 });
-                    } else {
-                        mapInstance.current.fitBounds(window.L.latLngBounds(allLatLngs), { padding: [50, 50] });
                     }
                     setTimeout(() => { if (mapInstance.current) mapInstance.current.invalidateSize(); }, 100);
                 }
-            }, [mapData, activeTab, highlightIdle, showBDRFilter, expFilters, osrmRoutings]);
+            }, [mapData, activeTab, highlightIdle, showBDRFilter, expFilters, osrmRoutings, activeAssignTour, clickAssignScope, tours]);
+
+            const unassignedCount = data.filter(r => r.tour === 'Prognosen (Vorladung)').length;
+            const total0900 = data.filter(r => r.commit === '09:00').length;
+            const total1030 = data.filter(r => r.commit === '10:30').length;
+            const total1200 = data.filter(r => r.commit === '12:00' || r.commit === '14:00').length;
+            const concreteToursCount = dispositionTourBoard.filter(t => !t.isPool).length;
+            const totalSlaRisks = dispositionTourBoard.filter(t => !t.isPool).reduce((acc, t) => acc + t.slaConflicts, 0);
 
             return (
                 <div
-                    className="h-full flex flex-col p-4 relative"
+                    className="h-full flex flex-col p-3 bg-slate-100 relative select-none"
                     onDragEnter={onDragEnter}
                     onDragOver={onDragOver}
                     onDragLeave={onDragLeave}
                     onDrop={onDrop}
                 >
+                    {/* Toast Notification */}
+                    {toastMessage && (
+                        <div className="fixed bottom-5 right-5 z-[10000] bg-[#1e1410] text-white border-2 border-[#FFB500] px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 text-xs font-bold animate-bounce">
+                            <span className="text-[#FFB500] text-base">⚡</span>
+                            <span>{toastMessage}</span>
+                        </div>
+                    )}
+
                     {isDragging && (
                         <div className="absolute inset-0 z-50 rounded-xl bg-blue-50 flex flex-col items-center justify-center m-4" style={{ backgroundColor: 'rgba(239, 246, 255, 0.95)', border: '4px dashed #3b82f6' }}>
                             <div className="pointer-events-none flex flex-col items-center justify-center">
@@ -1784,159 +2365,380 @@
                             </div>
                         </div>
                     )}
-                    {/* 1. Header (Фиксированная высота) */}
-                    <div className="shrink-0 bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
-                        <div>
-                            <div className="flex items-center gap-3 flex-wrap">
-                                <h1 className="text-xl lg:text-2xl font-bold text-[#351C15]">Disposition Analytics Dashboard</h1>
-                                <span
-                                    onClick={handleExportGeoCache}
-                                    title="Klicken, um den aktuellen Geo-Cache als geo_cache.json herunterzuladen"
-                                    className="cursor-pointer text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
-                                >
-                                    🗄️ {dbEngine}: {Object.keys(plzCoordsCache).length} Einträge
-                                </span>
-                                <button
-                                    onClick={() => setShowApiModal(true)}
-                                    title="Google Maps Platform API-Key & Einstellungen verwalten"
-                                    className={"cursor-pointer text-xs font-bold px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1 " + (googleApiKey ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100" : "bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100")}
-                                >
-                                    🗺️ Google API {googleApiKey ? 'Aktiv' : 'Key fehlt'} ⚙️
-                                </button>
+
+                    {/* 1. Enterprise Command Header */}
+                    <div className="shrink-0 bg-[#1e1410] text-white px-4 py-2.5 rounded-xl shadow-md border-b-2 border-[#FFB500] flex flex-col xl:flex-row justify-between items-start xl:items-center gap-3 mb-2.5">
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <div className="w-9 h-9 rounded-lg bg-[#FFB500] text-[#1e1410] flex items-center justify-center font-black text-base shadow">
+                                UPS
                             </div>
-                            <p className="text-sm text-gray-500 mt-1">Enterprise-Level: Routenüberschneidungen, Google Maps API, SLAs und KPIs</p>
+                            <div>
+                                <div className="flex items-center gap-2.5 flex-wrap">
+                                    <h1 className="text-base lg:text-lg font-black tracking-tight text-white">SVD DISPOSITION WORKSTATION</h1>
+                                    <span
+                                        onClick={handleExportGeoCache}
+                                        title="Klicken, um den aktuellen Geo-Cache als geo_cache.json herunterzuladen"
+                                        className="cursor-pointer text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-colors"
+                                    >
+                                        🗄️ {dbEngine}: {Object.keys(plzCoordsCache).length} Адр.
+                                    </span>
+                                    <button
+                                        onClick={() => setShowApiModal(true)}
+                                        title="Google Maps Platform API-Key & Einstellungen verwalten"
+                                        className={"cursor-pointer text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-colors flex items-center gap-1 " + (googleApiKey ? "bg-blue-500/20 text-blue-300 border-blue-400/40 hover:bg-blue-500/30" : "bg-amber-500/20 text-amber-300 border-amber-400/40")}
+                                    >
+                                        🗺️ Google API {googleApiKey ? 'Aktiv' : 'Key fehlt'} ⚙️
+                                    </button>
+                                </div>
+                                <p className="text-[11px] text-amber-200/70">Morgen-Express-Disposition • Smart Clustering • Live SLA-Prognose • Google Maps</p>
+                            </div>
                         </div>
-                        <div className="flex flex-col sm:flex-row items-center gap-4 w-full md:w-auto">
-                            {data.length > 0 && !isForecastMode && (
-                                <button onClick={fetchOsrmDepotRoutes} disabled={isFetchingOsrm} className={`flex items-center gap-2 px-4 py-2 rounded shadow-sm text-sm font-bold transition-colors w-full sm:w-auto ${isFetchingOsrm ? 'bg-gray-100 text-gray-400' : 'bg-[#e0e7ff] text-[#3730a3] hover:bg-[#c7d2fe] border border-[#a5b4fc]'}`}>
-                                    {isFetchingOsrm ? 'Berechne OSRM Wege...' : '⛐ Alle Depotwege (OSRM) abrufen'}
+
+                        {/* Live Morning KPI Ribbon */}
+                        {data.length > 0 && (
+                            <div className="flex items-center gap-1.5 flex-wrap bg-white/5 px-3 py-1.5 rounded-lg border border-white/10">
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
+                                    <div className="text-[9px] uppercase text-slate-400 font-bold">Gesamt</div>
+                                    <div className="text-sm font-black text-white">{data.length}</div>
+                                </div>
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10 cursor-pointer" onClick={() => setActiveTab('disposition')}>
+                                    <div className="text-[9px] uppercase text-amber-300 font-bold">Offen (Pool)</div>
+                                    <div className={"text-sm font-black " + (unassignedCount > 0 ? "text-[#FFB500] animate-pulse" : "text-emerald-400")}>{unassignedCount}</div>
+                                </div>
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
+                                    <div className="text-[9px] uppercase text-red-400 font-bold">09:00 AM</div>
+                                    <div className="text-sm font-black text-red-400">{total0900}</div>
+                                </div>
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
+                                    <div className="text-[9px] uppercase text-purple-300 font-bold">10:30 Expr</div>
+                                    <div className="text-sm font-black text-purple-300">{total1030}</div>
+                                </div>
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
+                                    <div className="text-[9px] uppercase text-orange-300 font-bold">12:00 Expr</div>
+                                    <div className="text-sm font-black text-orange-300">{total1200}</div>
+                                </div>
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
+                                    <div className="text-[9px] uppercase text-sky-300 font-bold">Touren</div>
+                                    <div className="text-sm font-black text-sky-300">{concreteToursCount}</div>
+                                </div>
+                                <div className="px-2 py-0.5 text-center">
+                                    <div className="text-[9px] uppercase text-slate-400 font-bold">SLA Risiko</div>
+                                    <div className={"text-sm font-black " + (totalSlaRisks > 0 ? "text-red-400" : "text-emerald-400")}>{totalSlaRisks === 0 ? '✓ 0' : `⚠️ ${totalSlaRisks}`}</div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Actions & File Upload */}
+                        <div className="flex items-center gap-2.5 flex-wrap w-full xl:w-auto justify-end">
+                            {data.length > 0 && (
+                                <button
+                                    onClick={() => handleRunAutoDisposition('corridors', autoClusterCount)}
+                                    className="bg-gradient-to-r from-amber-400 to-[#FFB500] hover:from-yellow-400 hover:to-yellow-500 text-[#1e1410] font-black text-xs px-3.5 py-2 rounded-lg shadow-sm flex items-center gap-1.5 transition-transform active:scale-95"
+                                    title="Verteilt alle unzugewiesenen Sendungen automatisch nach PLZ-Korridoren & optimiert die 09:00/10:30/12:00 Reihenfolge"
+                                >
+                                    🤖 1-Klick Auto-Disposition
                                 </button>
                             )}
-                            {data.length > 0 && (
-                                <div className="flex items-center gap-2 bg-yellow-50 px-3 py-2 rounded border border-yellow-200 w-full sm:w-auto">
-                                    <label className="text-sm font-bold text-yellow-800 whitespace-nowrap">Netto-Leerzeit &gt; (Min):</label>
-                                    <input type="number" value={idleThreshold} onChange={(e) => setIdleThreshold(Number(e.target.value))} className="w-16 border-yellow-300 rounded shadow-sm p-1 text-sm bg-white font-bold text-center" min="5" max="240" />
-                                </div>
+                            {data.length > 0 && !isForecastMode && (
+                                <button onClick={fetchOsrmDepotRoutes} disabled={isFetchingOsrm} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isFetchingOsrm ? 'bg-white/10 text-gray-400' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}>
+                                    {isFetchingOsrm ? 'OSRM...' : '⛐ Depotwege'}
+                                </button>
                             )}
-                            <div className="flex flex-col gap-2 w-full sm:w-auto bg-white p-2 rounded-lg border border-gray-200 shadow-sm pr-4">
-                                <div className="flex items-center gap-3">
-                                    <label className="cursor-pointer inline-block text-sm font-semibold bg-[#FFB500] text-[#351C15] hover:bg-yellow-500 py-1.5 px-4 rounded-full transition-colors whitespace-nowrap m-0 border border-transparent shadow-sm">
-                                        Dateien auswählen
-                                        <input type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls" onChange={handleFileUpload} className="hidden" />
-                                    </label>
-                                    {data.length > 0 && (
-                                        <button
-                                            onClick={clearData}
-                                            className="text-xs font-bold text-gray-400 hover:text-red-500 transition-colors uppercase tracking-wider"
-                                            title="Alle Daten zurücksetzen"
-                                        >
-                                            [ Reset ]
-                                        </button>
-                                    )}
-                                    <span className="text-sm text-gray-500 truncate max-w-[150px] font-medium">{fileName || (data.length > 0 ? 'Gespeicherte Daten' : 'Keine Datei')}</span>
-                                </div>
-                                {loadingStatus && (
-                                    <div className="w-full mt-2">
-                                        <div className="flex justify-between text-xs text-blue-600 font-medium mb-1">
-                                            <span>{loadingStatus}</span>
-                                            <span>{loadingProgress}%</span>
-                                        </div>
-                                        <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
-                                            <div className="bg-[#005A9C] h-1.5 rounded-full transition-all duration-300" style={{ width: `${loadingProgress}%` }}></div>
-                                        </div>
-                                    </div>
+                            <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg border border-white/15">
+                                <label className="cursor-pointer text-xs font-black bg-[#FFB500] text-[#1e1410] hover:bg-yellow-400 py-1 px-3 rounded-md transition-colors whitespace-nowrap">
+                                    📂 Datei laden
+                                    <input type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls" onChange={handleFileUpload} className="hidden" />
+                                </label>
+                                <span className="text-xs text-slate-300 truncate max-w-[130px] font-medium" title={fileName}>{fileName || (data.length > 0 ? 'Gespeichert' : 'Keine Datei')}</span>
+                                {data.length > 0 && (
+                                    <button
+                                        onClick={clearData}
+                                        className="text-[11px] font-bold text-red-300 hover:text-red-400 px-1.5 py-0.5 rounded bg-red-500/10 hover:bg-red-500/20 transition-colors"
+                                        title="Alle Daten zurücksetzen"
+                                    >
+                                        ✕ Reset
+                                    </button>
                                 )}
                             </div>
                         </div>
                     </div>
 
-                    {/* 2. Табы (Фиксированная высота) */}
-                    {data.length > 0 && (
-                        <div className="shrink-0 flex border-b border-gray-200 overflow-x-auto custom-scrollbar mb-4">
-                            <button onClick={() => setActiveTab('map')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap " + (activeTab === 'map' ? 'border-[#005A9C] text-[#005A9C]' : 'border-transparent text-gray-500 hover:text-gray-800')}>Touren-Karte</button>
-                            <button onClick={() => setActiveTab('table')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'table' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-500 hover:text-gray-800')}>
-                                📋 Sendungs-Tabelle <span className="bg-emerald-100 text-emerald-800 py-0.5 px-2 rounded-full text-xs font-black">{data.length}</span>
-                            </button>
-                            <button onClick={() => setActiveTab('google_hub')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'google_hub' ? 'border-blue-600 text-blue-700 bg-blue-50/40' : 'border-transparent text-gray-500 hover:text-gray-800')}>
-                                🧭 Google API & SLA-Routen
-                            </button>
-                            <button onClick={() => setActiveTab('idles')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap " + (activeTab === 'idles' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500 hover:text-gray-800')}>
-                                Leerzeiten-Tracker {allIdlesSummary.length > 0 && <span className="bg-gray-200 text-red-600 py-0.5 px-2 rounded-full text-xs font-black ml-1">{allIdlesSummary.length}</span>}
-                            </button>
-                            <button onClick={() => setActiveTab('sla')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap " + (activeTab === 'sla' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500 hover:text-gray-800')}>
-                                SLA und Pickups {slaAndPickups.violations.length > 0 && <span className="bg-gray-200 text-orange-600 py-0.5 px-2 rounded-full text-xs font-black ml-1">{slaAndPickups.violations.length}</span>}
-                            </button>
-                            <button onClick={() => setActiveTab('plz')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap flex items-center gap-2 " + (activeTab === 'plz' ? 'border-[#9333ea] text-[#9333ea]' : 'border-transparent text-gray-500 hover:text-gray-800')}>
-                                <span className="w-2 h-2 rounded-full bg-[#9333ea]"></span> PLZ Übersicht
-                            </button>
-                            <button onClick={() => setActiveTab('performance')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap " + (activeTab === 'performance' ? 'border-[#351C15] text-[#351C15]' : 'border-transparent text-gray-500 hover:text-gray-800')}>Tour-Performance</button>
-                            <button onClick={() => setActiveTab('gps')} className={"py-2 px-5 text-sm font-bold border-b-2 transition-colors whitespace-nowrap " + (activeTab === 'gps' ? 'border-teal-500 text-teal-600' : 'border-transparent text-gray-500 hover:text-gray-800')}>
-                                GPS-Kontrolle
-                            </button>
+                    {loadingStatus && (
+                        <div className="shrink-0 bg-blue-950 text-white px-4 py-1.5 rounded-lg mb-2 flex items-center justify-between gap-4 text-xs">
+                            <span className="font-bold text-amber-300">⚡ {loadingStatus}</span>
+                            <div className="flex-1 max-w-md bg-white/20 rounded-full h-2 overflow-hidden">
+                                <div className="bg-[#FFB500] h-2 rounded-full transition-all duration-300" style={{ width: `${loadingProgress}%` }}></div>
+                            </div>
+                            <span className="font-mono font-bold">{loadingProgress}%</span>
                         </div>
                     )}
 
-                    {/* 3. Основная контентная область (Flex-1 занимает остаток экрана) */}
+                    {/* 2. Navigation Bar */}
+                    {data.length > 0 && (
+                        <div className="shrink-0 flex items-center justify-between bg-white px-3 py-1.5 rounded-xl shadow-sm border border-gray-200 overflow-x-auto custom-scrollbar mb-2.5 gap-2">
+                            <div className="flex items-center gap-1">
+                                <button onClick={() => setActiveTab('map')} className={"py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'map' ? 'bg-[#351C15] text-[#FFB500] shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    🗺️ Karte &amp; Live-Zuweisung
+                                </button>
+                                <button onClick={() => setActiveTab('disposition')} className={"py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'disposition' ? 'bg-[#FFB500] text-[#1e1410] shadow-sm' : 'text-gray-700 bg-amber-50/70 hover:bg-amber-100/80 border border-amber-200')}>
+                                    ⚡ Express-Disposition (Touren-Board)
+                                    {unassignedCount > 0 && <span className="bg-red-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">{unassignedCount} offen</span>}
+                                </button>
+                                <button onClick={() => setActiveTab('table')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'table' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    📋 Sendungs-Tabelle <span className={"py-0.2 px-1.5 rounded-full text-[10px] font-black " + (activeTab === 'table' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800')}>{data.length}</span>
+                                </button>
+                                <button onClick={() => setActiveTab('plz')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'plz' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    📮 PLZ-Matrix
+                                </button>
+                                <button onClick={() => setActiveTab('google_hub')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'google_hub' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    🧭 SLA-Routen &amp; Adress-Prüfung
+                                </button>
+                                <button onClick={() => setActiveTab('idles')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 " + (activeTab === 'idles' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    ⏱ Leerzeiten {allIdlesSummary.length > 0 && <span className="bg-red-100 text-red-700 px-1.5 rounded-full text-[10px] font-black">{allIdlesSummary.length}</span>}
+                                </button>
+                                <button onClick={() => setActiveTab('sla')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'sla' ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    ⚠️ SLA &amp; Pickups
+                                </button>
+                                <button onClick={() => setActiveTab('performance')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'performance' ? 'bg-slate-800 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    📊 KPIs
+                                </button>
+                                <button onClick={() => setActiveTab('gps')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'gps' ? 'bg-teal-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    📍 GPS-Kontrolle
+                                </button>
+                            </div>
+
+                            {/* Quick Global Departure Time & Export */}
+                            <div className="flex items-center gap-2 shrink-0 border-l pl-3 border-gray-200">
+                                <span className="text-[11px] font-bold text-gray-500">Abfahrt Depot:</span>
+                                <input
+                                    type="time"
+                                    value={routeStartTime}
+                                    onChange={(e) => setRouteStartTime(e.target.value)}
+                                    className="border border-gray-300 rounded px-2 py-0.5 text-xs font-black bg-gray-50 text-gray-800"
+                                />
+                                <button
+                                    onClick={handleExportAllDispositionCSV}
+                                    className="bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold px-2.5 py-1 rounded-md shadow-sm"
+                                    title="Kompletten Tourenplan als CSV für Excel herunterladen"
+                                >
+                                    📥 Tourenplan CSV
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 3. Main Content Workspace */}
                     <div className="flex-1 min-h-0 relative">
                         {data.length > 0 ? (
                             <>
-                                {/* Tab: MAP (Карта и сайдбар занимают 100% высоты контейнера) */}
-                                <div className={`h-full w-full ${activeTab === 'map' ? 'flex flex-col lg:flex-row gap-4' : 'hidden'}`}>
-                                    {/* Левая панель со списками */}
-                                    <div className={`flex flex-col gap-4 shrink-0 w-full lg:w-1/4 h-full ${isMapExpanded ? "hidden" : "flex"}`}>
-                                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col flex-1 min-h-0">
-                                            <div className="flex justify-between items-end mb-3 border-b pb-2 shrink-0">
-                                                <label className="block text-sm font-bold text-gray-700">Touren auswählen:</label>
-                                                <button onClick={clearTourSelection} className="text-xs text-blue-600 hover:underline">Alle abwählen</button>
+                                {/* Tab: MAP + LIVE DISPOSITION SIDEBAR */}
+                                <div className={`h-full w-full ${activeTab === 'map' ? 'flex flex-col lg:flex-row gap-3' : 'hidden'}`}>
+                                    {/* Left Disposition & Tour Control Dock */}
+                                    <div className={`flex flex-col gap-2.5 shrink-0 w-full lg:w-[370px] h-full ${isMapExpanded ? "hidden" : "flex"}`}>
+                                        {/* Schnell-Disposition Box */}
+                                        <div className="bg-white p-3 rounded-xl shadow-sm border-2 border-amber-300 shrink-0 space-y-2.5">
+                                            <div className="flex items-center justify-between border-b border-amber-100 pb-2">
+                                                <div className="flex items-center gap-1.5">
+                                                    <span className="bg-[#FFB500] text-[#1e1410] font-black text-xs px-2 py-0.5 rounded">⚡ LIVE-DISPO</span>
+                                                    <span className="text-xs font-black text-[#351C15]">Schnell-Verteilung</span>
+                                                </div>
+                                                {unassignedCount > 0 ? (
+                                                    <span className="text-[11px] font-black text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
+                                                        {unassignedCount} offen
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-[11px] font-black text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                                                        ✓ Alle verteilt
+                                                    </span>
+                                                )}
                                             </div>
-                                            <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 flex flex-col gap-1.5">
-                                                {tours.map((t) => {
-                                                    const isSelected = selectedTours.includes(t);
-                                                    const selectedIdx = selectedTours.indexOf(t);
-                                                    const lineColor = isSelected ? TOUR_LINE_COLORS[selectedIdx % TOUR_LINE_COLORS.length] : 'transparent';
-                                                    return (
-                                                        <button key={t} onClick={() => toggleTourSelection(t)} className={"w-full text-left px-3 py-2 rounded text-sm font-medium border transition-colors flex justify-between items-center shrink-0 " + (isSelected ? 'bg-blue-50 border-blue-200 text-blue-900 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50')}>
-                                                            <div className="flex items-center gap-2">
-                                                                <div className={"w-3 h-3 rounded-full border " + (isSelected ? 'border-transparent' : 'border-gray-300')} style={{ backgroundColor: lineColor }}></div>
-                                                                {t}
-                                                            </div>
-                                                            {isSelected && <span className="text-blue-600">✓</span>}
+
+                                            {/* Smart Auto-Clustering Controls */}
+                                            <div className="bg-slate-50 p-2 rounded-lg border border-slate-200 space-y-2">
+                                                <div className="flex items-center justify-between gap-1">
+                                                    <span className="text-[11px] font-bold text-slate-700">🤖 Auto-Clustering:</span>
+                                                    <div className="flex items-center gap-1">
+                                                        <button
+                                                            onClick={() => handleRunAutoDisposition('corridors', autoClusterCount)}
+                                                            className="bg-[#351C15] hover:bg-black text-[#FFB500] text-[10px] font-black px-2.5 py-1 rounded shadow-sm"
+                                                            title="Verteilt automatisch in feste regionale Korridore (Zentrum, Nord/Airport, West/Radebeul, Süd/Prohlis, Ost, Meißen, Freital, Pirna)"
+                                                        >
+                                                            Nach Regionen (8 Korridore)
                                                         </button>
+                                                        <div className="flex items-center bg-white border border-slate-300 rounded overflow-hidden">
+                                                            <input
+                                                                type="number"
+                                                                min="2"
+                                                                max="20"
+                                                                value={autoClusterCount}
+                                                                onChange={(e) => setAutoClusterCount(Number(e.target.value))}
+                                                                className="w-9 text-center text-[11px] font-black py-0.5 outline-none"
+                                                                title="Anzahl Touren für GPS K-Means Clustering"
+                                                            />
+                                                            <button
+                                                                onClick={() => handleRunAutoDisposition('kmeans', autoClusterCount)}
+                                                                className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold px-2 py-1"
+                                                                title="Teilt alle offenen Stopps per GPS-K-Means in exakt N gleichmäßige Touren"
+                                                            >
+                                                                K-Means
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Click-on-Map Assignment Selector */}
+                                            <div className="space-y-1.5">
+                                                <div className="flex items-center justify-between">
+                                                    <label className="text-[11px] font-bold text-gray-700">🎯 Klick-Zuweisung auf Karte:</label>
+                                                    <div className="flex rounded-md border border-gray-300 overflow-hidden text-[10px] font-bold">
+                                                        <button
+                                                            onClick={() => setClickAssignScope('off')}
+                                                            className={"px-2 py-0.5 " + (clickAssignScope === 'off' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600')}
+                                                        >
+                                                            Info-Popup
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setClickAssignScope('stop')}
+                                                            className={"px-2 py-0.5 border-l border-gray-300 " + (clickAssignScope === 'stop' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600')}
+                                                        >
+                                                            + Stopp
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setClickAssignScope('plz')}
+                                                            className={"px-2 py-0.5 border-l border-gray-300 " + (clickAssignScope === 'plz' ? 'bg-purple-600 text-white' : 'bg-white text-gray-600')}
+                                                        >
+                                                            + Ganze PLZ
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex gap-1.5">
+                                                    <select
+                                                        value={activeAssignTour}
+                                                        onChange={(e) => setActiveAssignTour(e.target.value)}
+                                                        className="flex-1 border border-gray-300 rounded-lg px-2 py-1 text-xs font-bold bg-white text-gray-800"
+                                                    >
+                                                        <option value="">-- Ziel-Tour für Klick wählen --</option>
+                                                        {tours.filter(t => t !== 'Prognosen (Vorladung)').map(t => (
+                                                            <option key={t} value={t}>🎯 Ziel: {t}</option>
+                                                        ))}
+                                                        <option value="Prognosen (Vorladung)">↺ Zurück in Pool (Offen)</option>
+                                                    </select>
+                                                </div>
+
+                                                <div className="flex gap-1.5 pt-1">
+                                                    <input
+                                                        type="text"
+                                                        value={newTourInput}
+                                                        onChange={(e) => setNewTourInput(e.target.value)}
+                                                        onKeyDown={(e) => e.key === 'Enter' && handleCreateNewTour()}
+                                                        placeholder="Neue Tour (z.B. Tour 1, Nord...)"
+                                                        className="flex-1 border border-gray-300 rounded-lg px-2.5 py-1 text-xs bg-gray-50 focus:bg-white outline-none"
+                                                    />
+                                                    <button
+                                                        onClick={() => handleCreateNewTour()}
+                                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-3 py-1 rounded-lg shadow-sm whitespace-nowrap"
+                                                    >
+                                                        + Tour
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Tour Cards List with SLA Status & Actions */}
+                                        <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex flex-col flex-1 min-h-0">
+                                            <div className="flex justify-between items-center mb-2 border-b pb-1.5 shrink-0">
+                                                <label className="text-xs font-black text-gray-700 uppercase tracking-wider">Touren ({dispositionTourBoard.length})</label>
+                                                <div className="flex items-center gap-2">
+                                                    <button onClick={() => setSelectedTours(tours)} className="text-[11px] font-bold text-emerald-700 hover:underline">Alle an</button>
+                                                    <span className="text-gray-300">|</span>
+                                                    <button onClick={clearTourSelection} className="text-[11px] font-bold text-blue-600 hover:underline">Alle aus</button>
+                                                </div>
+                                            </div>
+                                            <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-2">
+                                                {dispositionTourBoard.map((tb) => {
+                                                    const isSelected = selectedTours.includes(tb.tour);
+                                                    const isTarget = activeAssignTour === tb.tour;
+                                                    return (
+                                                        <div
+                                                            key={tb.tour}
+                                                            className={"p-2.5 rounded-xl border transition-all shrink-0 " + (isTarget ? 'ring-2 ring-blue-500 bg-blue-50/40 border-blue-300' : isSelected ? 'bg-slate-50 border-slate-300 shadow-sm' : 'bg-white border-gray-200 opacity-65 hover:opacity-100')}
+                                                        >
+                                                            <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                                                                <div className="flex items-center gap-2 cursor-pointer flex-1 min-w-0" onClick={() => toggleTourSelection(tb.tour)}>
+                                                                    <input type="checkbox" checked={isSelected} readOnly className="rounded text-blue-600 pointer-events-none" />
+                                                                    <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
+                                                                    <span className="font-black text-xs text-gray-900 truncate" title={tb.tour}>{tb.tour}</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1 shrink-0">
+                                                                    {!tb.isPool && (
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                setActiveAssignTour(tb.tour);
+                                                                                if (clickAssignScope === 'off') setClickAssignScope('stop');
+                                                                                showToast(`🎯 Klick-Zuweisung aktiv für: ${tb.tour}`);
+                                                                            }}
+                                                                            className={"px-2 py-0.5 rounded text-[10px] font-black border " + (isTarget ? "bg-blue-600 text-white border-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50")}
+                                                                            title="Auf Karte klicken, um Stopps dieser Tour zuzuweisen"
+                                                                        >
+                                                                            {isTarget ? '🎯 Aktiv' : '🎯 Ziel'}
+                                                                        </button>
+                                                                    )}
+                                                                    <button
+                                                                        onClick={() => setManifestModalTour(tb.tour)}
+                                                                        className="px-1.5 py-0.5 rounded bg-slate-800 text-white text-[10px] font-bold hover:bg-black"
+                                                                        title="Fahrer-Manifest & Stopp-Liste öffnen"
+                                                                    >
+                                                                        📋 {tb.totalStops} Stp
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* SLA Pills & Metrics */}
+                                                            <div className="flex items-center justify-between text-[10px] font-bold gap-1 flex-wrap">
+                                                                <div className="flex items-center gap-1">
+                                                                    {tb.count0900 > 0 && <span className="px-1.5 py-0.2 rounded bg-red-100 text-red-800 border border-red-300">09:00×{tb.count0900}</span>}
+                                                                    {tb.count1030 > 0 && <span className="px-1.5 py-0.2 rounded bg-purple-100 text-purple-800 border border-purple-300">10:30×{tb.count1030}</span>}
+                                                                    {tb.count1200 > 0 && <span className="px-1.5 py-0.2 rounded bg-orange-100 text-orange-800 border border-orange-300">12:00×{tb.count1200}</span>}
+                                                                    {tb.countEod > 0 && <span className="px-1.5 py-0.2 rounded bg-gray-100 text-gray-700">EOD×{tb.countEod}</span>}
+                                                                </div>
+                                                                {!tb.isPool && (
+                                                                    <div className="flex items-center gap-1.5">
+                                                                        <span className="text-gray-500">~{tb.totalKm}km</span>
+                                                                        {tb.slaConflicts > 0 ? (
+                                                                            <span className="text-red-700 bg-red-100 px-1.5 rounded font-black" title="Drohende SLA-Überschreitung!">⚠️ {tb.slaConflicts} SLA</span>
+                                                                        ) : (
+                                                                            <span className="text-emerald-700 bg-emerald-100 px-1.5 rounded font-black">✓ SLA OK (Ende {tb.finishStr})</span>
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
                                                     );
                                                 })}
                                             </div>
                                         </div>
-                                        {selectedExpressDetails.length > 0 && (
-                                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col h-1/3 min-h-[200px] shrink-0">
-                                                <label className="block text-sm font-bold text-[#351C15] mb-2 border-b pb-2 shrink-0">Express ({selectedExpressDetails.length})</label>
-                                                <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 flex flex-col gap-2">
-                                                    {selectedExpressDetails.map((pkg, idx) => {
-                                                        const colorClass = getExpressColorClass(pkg.commit, pkg.state);
-                                                        return (
-                                                            <div key={idx} className={"p-2 rounded border text-xs shadow-sm flex flex-col gap-1 shrink-0 cursor-pointer hover:brightness-95 " + colorClass} onClick={() => { setHighlightIdle({ tour: pkg.tour, fromSeq: pkg.seq, toSeq: pkg.seq }); }}>
-                                                                <div className="flex justify-between font-bold mb-1">
-                                                                    <span>{pkg.tour} | #{pkg.seq}</span>
-                                                                    <span className={pkg.state === 'Verspaetet' ? 'text-red-600 font-black' : ''}>{pkg.state}</span>
-                                                                </div>
-                                                                <div className="text-[10px] text-gray-600 mb-1.5">{pkg.service}</div>
-                                                                <div className="flex justify-between text-[10px] bg-white/60 p-1 rounded">
-                                                                    <span>Soll: <b>{pkg.commit}</b></span>
-                                                                    <span>Ist: <b className={pkg.state === 'Verspaetet' ? 'text-red-600' : 'text-green-700'}>{pkg.actual}</b></span>
-                                                                </div>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            </div>
-                                        )}
                                     </div>
 
-                                    {/* Карта */}
+                                    {/* Map View */}
                                     <div className="bg-white p-2 rounded-xl shadow-sm border border-gray-200 flex-1 relative h-full">
+                                        {/* Active Click-to-Assign Floating Banner on Map */}
+                                        {activeAssignTour && clickAssignScope !== 'off' && (
+                                            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] bg-blue-700/95 text-white px-4 py-2 rounded-full shadow-2xl border-2 border-white flex items-center gap-3 text-xs font-black pointer-events-auto">
+                                                <span>🎯 KLICK-MODUS AKTIV: Klicke auf einen Marker auf der Karte → <u>{activeAssignTour}</u> ({clickAssignScope === 'plz' ? 'Ganze PLZ' : 'Stopp'})</span>
+                                                <button
+                                                    onClick={() => setClickAssignScope('off')}
+                                                    className="bg-white/20 hover:bg-white/30 px-2 py-0.5 rounded-full text-[10px]"
+                                                >
+                                                    Beenden ✕
+                                                </button>
+                                            </div>
+                                        )}
                                         <div ref={mapRef} className="w-full h-full rounded-lg z-[1]"></div>
                                         <div className="absolute top-[85px] left-[10px] z-[1000] flex flex-col items-start gap-2">
                                             <button onClick={() => { setIsMapExpanded(!isMapExpanded); setTimeout(() => mapInstance.current && mapInstance.current.invalidateSize(), 300); }} className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-800 px-3 py-2 text-xs rounded-lg font-bold shadow-md cursor-pointer pointer-events-auto flex items-center gap-1">
-                                                {isMapExpanded ? '↙ Karte verkleinern' : '↗ Karte vergrößern'}
+                                                {isMapExpanded ? '↙ Seitenleiste einblenden' : '↗ Vollbild-Karte'}
                                             </button>
                                             {/* Переключатель слоёв карты Google Maps / OSM */}
                                             <div className="bg-white/95 backdrop-blur-sm p-1.5 rounded-xl shadow-lg border border-gray-300 flex flex-col gap-1 pointer-events-auto">
@@ -1963,64 +2765,299 @@
                                             )}
                                         </div>
                                         <div className="absolute top-4 right-4 z-[1000] flex flex-col items-end pointer-events-none gap-2">
-                                            <div className="flex gap-2 pointer-events-auto">
-                                                <button onClick={() => setShowBDRFilter(!showBDRFilter)} className={"px-3 py-1.5 rounded-lg font-bold text-[11px] border shadow-sm transition-colors flex items-center gap-1.5 " + (showBDRFilter ? "bg-[#fef08a] border-[#eab308] text-[#854d0e]" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                            <div className="flex gap-1.5 pointer-events-auto bg-white/90 backdrop-blur-sm p-1.5 rounded-xl shadow border border-gray-200">
+                                                <button onClick={() => setShowBDRFilter(!showBDRFilter)} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (showBDRFilter ? "bg-[#fef08a] border-[#eab308] text-[#854d0e]" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full border-2 " + (showBDRFilter ? 'border-[#854d0e]' : 'border-gray-400')}></span> BDR
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, '0900': !p['0900'] }))} className={"px-2 py-1.5 rounded-lg font-bold text-[11px] border shadow-sm transition-colors flex items-center gap-1 " + (expFilters['0900'] ? "bg-red-50 border-red-300 text-red-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, '0900': !p['0900'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['0900'] ? "bg-red-50 border-red-300 text-red-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['0900'] ? 'bg-[#dc2626]' : 'bg-gray-400')}></span> 09:00
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, '1030': !p['1030'] }))} className={"px-2 py-1.5 rounded-lg font-bold text-[11px] border shadow-sm transition-colors flex items-center gap-1 " + (expFilters['1030'] ? "bg-purple-50 border-purple-300 text-purple-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, '1030': !p['1030'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['1030'] ? "bg-purple-50 border-purple-300 text-purple-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['1030'] ? 'bg-[#8b5cf6]' : 'bg-gray-400')}></span> 10:30
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, '1200': !p['1200'] }))} className={"px-2 py-1.5 rounded-lg font-bold text-[11px] border shadow-sm transition-colors flex items-center gap-1 " + (expFilters['1200'] ? "bg-orange-50 border-orange-300 text-orange-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, '1200': !p['1200'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['1200'] ? "bg-orange-50 border-orange-300 text-orange-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['1200'] ? 'bg-[#f97316]' : 'bg-gray-400')}></span> 12:00
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, 'OTHER': !p['OTHER'] }))} className={"px-2 py-1.5 rounded-lg font-bold text-[11px] border shadow-sm transition-colors flex items-center gap-1 " + (expFilters['OTHER'] ? "bg-pink-50 border-pink-300 text-pink-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, 'OTHER': !p['OTHER'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['OTHER'] ? "bg-pink-50 border-pink-300 text-pink-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['OTHER'] ? 'bg-[#ec4899]' : 'bg-gray-400')}></span> Sonstige
                                                 </button>
                                             </div>
-                                            <button onClick={() => setShowExpressMapList(!showExpressMapList)} className="pointer-events-auto bg-white hover:bg-gray-50 border border-gray-200 text-[#351C15] px-3 py-2 rounded-lg font-bold shadow-sm flex items-center gap-2">
-                                                <span className="w-2.5 h-2.5 rounded-full bg-[#351C15] inline-block"></span> Express-Liste {showExpressMapList ? 'verbergen' : 'einblenden'}
-                                            </button>
-                                            {showExpressMapList && selectedExpressDetails.length > 0 && (
-                                                <div className="mt-2 bg-white/95 backdrop-blur-sm p-3 rounded-xl shadow-2xl border border-gray-200 max-h-[300px] overflow-y-auto custom-scrollbar w-72 pointer-events-auto flex flex-col gap-1">
-                                                    {selectedExpressDetails.map((pkg, idx) => {
-                                                        const colorClass = getExpressColorClass(pkg.commit, pkg.state);
-                                                        return (
-                                                            <div key={idx} className={`text-xs p-2.5 border rounded cursor-pointer hover:brightness-95 transition-all shrink-0 ${colorClass}`} onClick={() => { setHighlightIdle({ tour: pkg.tour, fromSeq: pkg.seq, toSeq: pkg.seq }); }}>
-                                                                <div className="flex justify-between font-bold mb-1">
-                                                                    <span>#{pkg.seq} {pkg.isBDR ? <span className="ml-1 bg-yellow-100/50 text-yellow-800 px-1 rounded text-[9px]">BDR</span> : ''}</span>
-                                                                    <span className={pkg.state === 'Verspaetet' ? 'text-red-700 font-black' : ''}>{pkg.state}</span>
-                                                                </div>
-                                                                <div className="text-[10px] opacity-80 mb-1 font-semibold">{pkg.service}</div>
-                                                                <div className="flex justify-between text-[10px] font-bold bg-white/50 p-1 rounded"><span>Soll: {pkg.commit}</span><span>Ist: {pkg.actual}</span></div>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
                                         </div>
-                                        <div className="absolute bottom-6 left-6 z-[1000] bg-white/95 p-4 rounded-xl shadow-xl border border-slate-200 text-[10px] font-bold space-y-1.5 pointer-events-none">
-                                            <div className="text-slate-800 uppercase tracking-tighter mb-2 border-b pb-1">Marker-Legende</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#3b82f6] inline-block"></span> Standard</div>
+                                        <div className="absolute bottom-5 left-5 z-[1000] bg-white/95 p-3 rounded-xl shadow-xl border border-slate-200 text-[10px] font-bold space-y-1 pointer-events-none">
+                                            <div className="text-slate-800 uppercase tracking-tighter mb-1 border-b pb-1">SLA Marker-Farben</div>
+                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#dc2626] inline-block"></span> Express 09:00</div>
+                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] inline-block"></span> Express 10:30</div>
+                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#f97316] inline-block"></span> Express 12:00</div>
                                             <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#eab308] inline-block"></span> Saver (EOD)</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#dc2626] inline-block"></span> Expr. 09:00</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] inline-block"></span> Expr. 10:30</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#f97316] inline-block"></span> Expr. 12:00</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#ec4899] inline-block"></span> Expr. Sonstige</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#16a34a] inline-block"></span> International</div>
+                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#3b82f6] inline-block"></span> Standard</div>
                                         </div>
                                     </div>
                                 </div>
 
-                                {/* Tab: Sendungs-Tabelle (Alle geladenen Sendungen / Forecast & Touren) */}
+                                {/* Tab: MORNING EXPRESS DISPOSITION BOARD (Kanban & Auto-Cluster Workstation) */}
+                                <div className={`h-full overflow-y-auto custom-scrollbar pb-10 pr-1 ${activeTab === 'disposition' ? 'block' : 'hidden'}`}>
+                                    <div className="space-y-4">
+                                        {/* Top Control Bar of Disposition Board */}
+                                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
+                                            <div>
+                                                <h2 className="text-lg font-black text-[#351C15] flex items-center gap-2">
+                                                    ⚡ Morgen-Disposition: Express-Tourenverteilung &amp; SLA-Kontrolle
+                                                </h2>
+                                                <p className="text-xs text-gray-500 mt-0.5">
+                                                    Verteilen Sie die Morgen-Vorladung in Sekunden per <b>Smart-Korridor-Automatik</b>, <b>PLZ-Schnellzuweisung</b> oder einzeln pro Stopp. Jede Tour berechnet live die Ankunftszeiten (ETA) ab Depot Klipphausen ({routeStartTime} Uhr).
+                                                </p>
+                                            </div>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <button
+                                                    onClick={() => handleRunAutoDisposition('corridors', autoClusterCount)}
+                                                    className="bg-[#FFB500] hover:bg-yellow-500 text-[#1e1410] font-black text-xs px-4 py-2 rounded-lg shadow-sm flex items-center gap-1.5"
+                                                >
+                                                    🤖 Auto-Verteilung (8 Regional-Korridore)
+                                                </button>
+                                                <div className="flex items-center bg-slate-100 rounded-lg p-1 border border-slate-300">
+                                                    <span className="text-[11px] font-bold text-slate-700 px-2">GPS Cluster:</span>
+                                                    <input
+                                                        type="number"
+                                                        min="2"
+                                                        max="20"
+                                                        value={autoClusterCount}
+                                                        onChange={(e) => setAutoClusterCount(Number(e.target.value))}
+                                                        className="w-12 border border-slate-300 rounded px-1.5 py-1 text-xs font-black text-center bg-white"
+                                                    />
+                                                    <button
+                                                        onClick={() => handleRunAutoDisposition('kmeans', autoClusterCount)}
+                                                        className="ml-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3 py-1 rounded-md"
+                                                    >
+                                                        In {autoClusterCount} Touren teilen
+                                                    </button>
+                                                </div>
+                                                <button
+                                                    onClick={handleOptimizeAllTours}
+                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-2 rounded-lg shadow-sm"
+                                                    title="Sortiert alle Touren optimal nach 09:00 → 10:30 → 12:00 und kürzester Fahrstrecke"
+                                                >
+                                                    🧭 Alle Touren SLA-optimieren
+                                                </button>
+                                                <button
+                                                    onClick={handleResetAllToPool}
+                                                    className="bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-700 border border-gray-300 font-bold text-xs px-3 py-2 rounded-lg"
+                                                >
+                                                    ↺ Alles zurück in Pool
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Quick PLZ Bulk Assignment Strip */}
+                                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-3">
+                                                <div className="text-xs font-black text-gray-800 uppercase tracking-wider flex items-center gap-2">
+                                                    📮 Schnellzuweisung nach Postleitzahl (PLZ-Cluster → Ziel-Tour)
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-xs font-bold text-gray-600">Aktive Ziel-Tour:</span>
+                                                    <select
+                                                        value={activeAssignTour}
+                                                        onChange={(e) => setActiveAssignTour(e.target.value)}
+                                                        className="border-2 border-blue-500 rounded-lg px-2.5 py-1 text-xs font-black bg-blue-50 text-blue-900"
+                                                    >
+                                                        <option value="">-- Ziel-Tour wählen --</option>
+                                                        {tours.filter(t => t !== 'Prognosen (Vorladung)').map(t => (
+                                                            <option key={t} value={t}>{t}</option>
+                                                        ))}
+                                                    </select>
+                                                    <input
+                                                        type="text"
+                                                        value={newTourInput}
+                                                        onChange={(e) => setNewTourInput(e.target.value)}
+                                                        onKeyDown={(e) => e.key === 'Enter' && handleCreateNewTour()}
+                                                        placeholder="+ Neue Tour anlegen..."
+                                                        className="border border-gray-300 rounded-lg px-2.5 py-1 text-xs"
+                                                    />
+                                                    <button onClick={() => handleCreateNewTour()} className="bg-slate-800 text-white text-xs font-bold px-2.5 py-1 rounded-lg">+ Anlegen</button>
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto custom-scrollbar p-1">
+                                                {plzSummary.map((pRow) => {
+                                                    const unassignedInPlz = data.filter(r => r.postalCode === pRow.plz && r.tour === 'Prognosen (Vorladung)').length;
+                                                    return (
+                                                        <button
+                                                            key={pRow.plz}
+                                                            onClick={() => {
+                                                                if (!activeAssignTour) {
+                                                                    showToast('⚠️ Bitte rechts oben zuerst eine aktive Ziel-Tour auswählen!');
+                                                                    return;
+                                                                }
+                                                                handleBulkAssignPlzToTour(pRow.plz, activeAssignTour, false);
+                                                            }}
+                                                            className={"px-2.5 py-1.5 rounded-lg border text-left transition-all flex items-center gap-2 text-xs " + (unassignedInPlz > 0 ? "bg-amber-50/80 border-amber-300 hover:bg-amber-100" : "bg-gray-50 border-gray-200 hover:bg-blue-50")}
+                                                            title={`Klicken, um alle ${pRow.total} Sendungen in PLZ ${pRow.plz} (${pRow.location}) der Tour "${activeAssignTour || '...'}" zuzuweisen`}
+                                                        >
+                                                            <span className="font-black text-gray-900">{pRow.plz}</span>
+                                                            <span className="text-[10px] text-gray-500 truncate max-w-[85px]">{pRow.location}</span>
+                                                            <span className="bg-white px-1.5 py-0.2 rounded border text-[10px] font-black text-gray-800">{pRow.total}</span>
+                                                            {pRow.early > 0 && <span className="w-2 h-2 rounded-full bg-red-600" title={`${pRow.early}x 09:00`}></span>}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        {/* Kanban Tour Cards Grid */}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+                                            {dispositionTourBoard.map((tb) => (
+                                                <div
+                                                    key={tb.tour}
+                                                    className={"bg-white rounded-xl shadow-sm border-2 flex flex-col overflow-hidden " + (tb.isPool ? "border-amber-400" : tb.slaConflicts > 0 ? "border-red-300" : "border-gray-200")}
+                                                >
+                                                    {/* Card Header */}
+                                                    <div className="p-3 border-b flex justify-between items-start gap-2" style={{ backgroundColor: tb.isPool ? '#fffbeb' : '#f8fafc', borderTop: `4px solid ${tb.color}` }}>
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
+                                                                <h3 className="font-black text-sm text-gray-900 truncate" title={tb.tour}>{tb.tour}</h3>
+                                                            </div>
+                                                            {!tb.isPool && (
+                                                                <div className="mt-1.5 flex items-center gap-1.5">
+                                                                    <input
+                                                                        type="text"
+                                                                        value={tb.driverName}
+                                                                        onChange={(e) => saveTourDriverMeta({ ...tourDriverMeta, [tb.tour]: { ...(tourDriverMeta[tb.tour] || {}), driver: e.target.value } })}
+                                                                        placeholder="👤 Fahrer / Kurier Name..."
+                                                                        className="border border-gray-300 rounded px-2 py-0.5 text-[11px] font-semibold bg-white w-full"
+                                                                    />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div className="text-right shrink-0">
+                                                            <div className="text-base font-black text-gray-900">{tb.totalStops} <span className="text-[10px] font-bold text-gray-500">Stopps</span></div>
+                                                            <div className="text-[10px] font-bold text-gray-500">{tb.totalPackages} Pakete</div>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* SLA & Route Health Bar */}
+                                                    <div className="px-3 py-2 bg-slate-50 border-b border-gray-200 flex items-center justify-between text-[11px] font-bold flex-wrap gap-1">
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800">09:00: {tb.count0900}</span>
+                                                            <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">10:30: {tb.count1030}</span>
+                                                            <span className="px-1.5 py-0.5 rounded bg-orange-100 text-orange-800">12:00: {tb.count1200}</span>
+                                                        </div>
+                                                        {!tb.isPool && (
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="text-slate-600">🛣️ {tb.totalKm} km</span>
+                                                                {tb.slaConflicts > 0 ? (
+                                                                    <span className="bg-red-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">⚠️ {tb.slaConflicts} SLA-Konflikt</span>
+                                                                ) : (
+                                                                    <span className="bg-emerald-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">✓ SLA OK ({tb.finishStr})</span>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Stop Sequence List inside Card */}
+                                                    <div className="p-2 flex-1 max-h-[340px] overflow-y-auto custom-scrollbar divide-y divide-gray-100">
+                                                        {tb.stopSchedule.map((st) => {
+                                                            const commitColor = st.commit === '09:00' ? 'bg-red-600 text-white' : st.commit === '10:30' ? 'bg-purple-600 text-white' : st.commit === '12:00' ? 'bg-orange-500 text-white' : 'bg-slate-200 text-slate-700';
+                                                            return (
+                                                                <div key={st.key} className={"py-2 px-1.5 hover:bg-blue-50/50 transition-colors flex items-start justify-between gap-2 text-xs " + (!tb.isPool && st.bufferMins < 0 && st.commit !== 'EOD' ? "bg-red-50/60" : "")}>
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <span className="font-black text-gray-500">#{st.stopIndex}</span>
+                                                                            <span className={`px-1.5 py-0.2 rounded text-[10px] font-black ${commitColor}`}>{st.commit}</span>
+                                                                            {!tb.isPool && (
+                                                                                <span className={"text-[10px] font-black " + (st.bufferMins < 0 && st.commit !== 'EOD' ? "text-red-600" : "text-emerald-700")}>
+                                                                                    ETA {st.etaStr}
+                                                                                </span>
+                                                                            )}
+                                                                            {st.pkgCount > 1 && <span className="bg-amber-100 text-amber-900 px-1 rounded text-[10px] font-bold">{st.pkgCount} Pkt</span>}
+                                                                        </div>
+                                                                        <div className="font-bold text-gray-800 truncate mt-0.5" title={st.recipient}>{st.recipient || st.street}</div>
+                                                                        <div className="text-[11px] text-gray-500 truncate">{st.postalCode} {st.city}, {st.street}</div>
+                                                                    </div>
+                                                                    <div className="shrink-0 flex flex-col items-end gap-1">
+                                                                        <select
+                                                                            value={tb.tour}
+                                                                            onChange={(e) => handleAssignStopOrPlz(st.rows[0], e.target.value, 'stop')}
+                                                                            className="border border-gray-300 rounded px-1.5 py-0.5 text-[10px] font-bold bg-white text-gray-700 max-w-[115px]"
+                                                                            title="Diesen Stopp einer anderen Tour zuweisen"
+                                                                        >
+                                                                            {tours.map(tOpt => (
+                                                                                <option key={tOpt} value={tOpt}>{tOpt}</option>
+                                                                            ))}
+                                                                        </select>
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                setActiveTab('map');
+                                                                                if (!selectedTours.includes(tb.tour)) setSelectedTours(prev => [...prev, tb.tour]);
+                                                                                setHighlightIdle({ tour: tb.tour, fromSeq: st.seq, toSeq: st.seq });
+                                                                            }}
+                                                                            className="text-[10px] text-blue-600 hover:underline font-bold"
+                                                                        >
+                                                                            📍 Karte
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+
+                                                    {/* Card Footer Actions */}
+                                                    <div className="p-2.5 bg-gray-50 border-t border-gray-200 flex items-center justify-between gap-1.5 flex-wrap">
+                                                        {!tb.isPool && (
+                                                            <>
+                                                                <button
+                                                                    onClick={() => handleOptimizeSingleTour(tb.tour)}
+                                                                    className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold shadow-sm"
+                                                                    title="Stopps nach SLA (09:00 → 10:30 → 12:00) und kürzester Strecke sortieren"
+                                                                >
+                                                                    ⚡ Bestweg
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleCopyDriverWhatsApp(tb)}
+                                                                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-black text-white rounded-lg text-[11px] font-bold shadow-sm"
+                                                                    title="Manifest + Google Maps Link für WhatsApp kopieren"
+                                                                >
+                                                                    📲 WhatsApp
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => setManifestModalTour(tb.tour)}
+                                                                    className="px-2.5 py-1.5 bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 rounded-lg text-[11px] font-bold"
+                                                                >
+                                                                    🖨️ Manifest
+                                                                </button>
+                                                                {tb.googleNavUrl && (
+                                                                    <a
+                                                                        href={tb.googleNavUrl}
+                                                                        target="_blank"
+                                                                        className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-bold"
+                                                                        title="Tour direkt in Google Maps Navigation öffnen"
+                                                                    >
+                                                                        🧭 Route ↗
+                                                                    </a>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                        {tb.isPool && tb.totalPackages > 0 && (
+                                                            <button
+                                                                onClick={() => handleRunAutoDisposition('corridors', autoClusterCount)}
+                                                                className="w-full py-2 bg-[#FFB500] hover:bg-yellow-500 text-[#1e1410] font-black rounded-lg text-xs shadow-sm"
+                                                            >
+                                                                🤖 Jetzt {tb.totalPackages} offene Sendungen automatisch verteilen
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Tab: Sendungs-Tabelle (Alle geladenen Sendungen / Forecast & Touren mit Direkt-Zuweisung) */}
                                 <div className={`h-full overflow-y-auto custom-scrollbar pb-10 pr-2 ${activeTab === 'table' ? 'block' : 'hidden'}`}>
                                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 space-y-4">
                                         <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-4 gap-4">
                                             <div>
                                                 <h2 className="text-xl font-bold text-gray-800">Sendungs-Tabelle ({filteredTableRows.length} von {data.length})</h2>
-                                                <p className="text-sm text-gray-500 mt-1">Vollständige Liste aller geladenen Pakete (inkl. Express-Forecast). Klicken Sie auf eine Zeile, um die Sendung auf der Karte zu fokussieren.</p>
+                                                <p className="text-sm text-gray-500 mt-1">Vollständige Liste aller geladenen Pakete. Sie können die <b>Tour direkt in der Zeile ändern</b> oder per Klick auf der Karte fokussieren.</p>
                                             </div>
                                             <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
                                                 <input
@@ -2048,7 +3085,7 @@
                                                 <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
                                                     <tr>
                                                         <th className="p-3 font-bold text-gray-500 uppercase">#</th>
-                                                        <th className="p-3 font-bold text-gray-500 uppercase">Tour / Typ</th>
+                                                        <th className="p-3 font-bold text-gray-500 uppercase">Tour Zuweisung</th>
                                                         <th className="p-3 font-bold text-gray-500 uppercase">PLZ / Ort</th>
                                                         <th className="p-3 font-bold text-gray-500 uppercase">Empfänger</th>
                                                         <th className="p-3 font-bold text-gray-500 uppercase">Straße / Adresse</th>
@@ -2069,7 +3106,7 @@
                                                                     : 'bg-blue-50 text-blue-700 border-blue-200';
                                                         return (
                                                             <tr
-                                                                key={idx}
+                                                                key={r._uid || idx}
                                                                 onClick={() => {
                                                                     setActiveTab('map');
                                                                     if (!selectedTours.includes(r.tour)) setSelectedTours(prev => [...prev, r.tour]);
@@ -2078,7 +3115,17 @@
                                                                 className="hover:bg-emerald-50/70 cursor-pointer transition-colors"
                                                             >
                                                                 <td className="p-3 font-bold text-gray-700">{r.seq}</td>
-                                                                <td className="p-3 font-bold text-[#351C15]">{r.tour}</td>
+                                                                <td className="p-3 font-bold text-[#351C15]" onClick={(e) => e.stopPropagation()}>
+                                                                    <select
+                                                                        value={r.tour}
+                                                                        onChange={(e) => handleAssignStopOrPlz(r, e.target.value, 'stop')}
+                                                                        className={"border rounded-lg px-2 py-1 text-xs font-bold " + (r.tour === 'Prognosen (Vorladung)' ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-emerald-50 border-emerald-300 text-emerald-900')}
+                                                                    >
+                                                                        {tours.map(tOpt => (
+                                                                            <option key={tOpt} value={tOpt}>{tOpt}</option>
+                                                                        ))}
+                                                                    </select>
+                                                                </td>
                                                                 <td className="p-3 font-semibold text-gray-800 whitespace-nowrap">{r.postalCode} {r.city}</td>
                                                                 <td className="p-3 text-gray-800 font-medium max-w-[220px] truncate" title={r.recipient}>{r.recipient || '-'}</td>
                                                                 <td className="p-3 text-gray-600 max-w-[240px] truncate" title={r.street}>{r.street || '-'}</td>
@@ -2453,10 +3500,18 @@
                                 </div>
 
                                 <div className={`h-full overflow-y-auto custom-scrollbar pb-10 pr-2 ${activeTab === 'plz' ? 'block' : 'hidden'}`}>
-                                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 max-w-5xl mx-auto border-t-4 border-t-[#9333ea]">
-                                        <h2 className="text-xl font-bold text-gray-800 border-b pb-3 mb-4 flex items-center gap-3">
-                                            <span className="bg-[#9333ea] text-white w-8 h-8 flex items-center justify-center rounded-lg">⚡</span> Express-Dichte nach Postleitzahl
-                                        </h2>
+                                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 max-w-6xl mx-auto border-t-4 border-t-[#9333ea]">
+                                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-3 mb-4 gap-3">
+                                            <h2 className="text-xl font-bold text-gray-800 flex items-center gap-3">
+                                                <span className="bg-[#9333ea] text-white w-8 h-8 flex items-center justify-center rounded-lg">📮</span> Express-Dichte &amp; Direkte PLZ-Tourenzuweisung
+                                            </h2>
+                                            <button
+                                                onClick={() => handleRunAutoDisposition('corridors', autoClusterCount)}
+                                                className="bg-[#FFB500] hover:bg-yellow-500 text-[#1e1410] font-black text-xs px-4 py-2 rounded-lg shadow-sm"
+                                            >
+                                                🤖 Alle PLZ nach Regional-Korridoren verteilen
+                                            </button>
+                                        </div>
                                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                                             <div className="bg-red-50 p-4 rounded-lg border border-red-100 text-center"><div className="text-2xl font-black text-red-600">{plzSummary.reduce((a, b) => a + b.early, 0)}</div><div className="text-xs font-bold text-red-900 mt-1">09:00 Early AM</div></div>
                                             <div className="bg-purple-50 p-4 rounded-lg border border-purple-100 text-center"><div className="text-2xl font-black text-purple-600">{plzSummary.reduce((a, b) => a + b.express1030, 0)}</div><div className="text-xs font-bold text-purple-900 mt-1">10:30 Express</div></div>
@@ -2473,19 +3528,40 @@
                                                         <th className="px-4 py-3 text-[#f97316]">12:00</th>
                                                         <th className="px-4 py-3 text-yellow-700">BDR</th>
                                                         <th className="px-4 py-3 font-black text-[#dc2626] border-l border-gray-200">Gesamt</th>
+                                                        <th className="px-4 py-3 text-left border-l border-gray-200">Aktuelle Tour(en)</th>
+                                                        <th className="px-4 py-3 text-center">Komplette PLZ zuweisen</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    {plzSummary.map((row, idx) => (
-                                                        <tr key={idx} className={"bg-white border-b hover:bg-blue-50 " + (idx % 2 === 0 ? '' : 'bg-gray-50/50')}>
-                                                            <td className="px-4 py-3 font-bold text-left">{row.plz} {row.plz === 'Unbekannt' ? '' : <span className="text-[11px] text-gray-500 font-semibold bg-gray-100 px-2 py-0.5 rounded ml-2">{row.location}</span>}</td>
-                                                            <td className="px-4 py-3 font-bold text-[#dc2626] bg-red-50/10">{row.early > 0 ? row.early : '-'}</td>
-                                                            <td className="px-4 py-3 font-black text-[#9333ea] bg-purple-50/20">{row.express1030 > 0 ? row.express1030 : '-'}</td>
-                                                            <td className="px-4 py-3 font-bold text-[#f97316] bg-orange-50/10">{row.nextDay > 0 ? row.nextDay : '-'}</td>
-                                                            <td className="px-4 py-3 font-bold text-yellow-600">{row.bdr > 0 ? row.bdr : '-'}</td>
-                                                            <td className="px-4 py-3 font-black text-lg text-[#dc2626] border-l border-gray-100">{row.total}</td>
-                                                        </tr>
-                                                    ))}
+                                                    {plzSummary.map((row, idx) => {
+                                                        const plzTours = [...new Set(data.filter(r => r.postalCode === row.plz).map(r => r.tour))];
+                                                        return (
+                                                            <tr key={idx} className={"bg-white border-b hover:bg-blue-50 " + (idx % 2 === 0 ? '' : 'bg-gray-50/50')}>
+                                                                <td className="px-4 py-3 font-bold text-left">{row.plz} {row.plz === 'Unbekannt' ? '' : <span className="text-[11px] text-gray-500 font-semibold bg-gray-100 px-2 py-0.5 rounded ml-2">{row.location}</span>}</td>
+                                                                <td className="px-4 py-3 font-bold text-[#dc2626] bg-red-50/10">{row.early > 0 ? row.early : '-'}</td>
+                                                                <td className="px-4 py-3 font-black text-[#9333ea] bg-purple-50/20">{row.express1030 > 0 ? row.express1030 : '-'}</td>
+                                                                <td className="px-4 py-3 font-bold text-[#f97316] bg-orange-50/10">{row.nextDay > 0 ? row.nextDay : '-'}</td>
+                                                                <td className="px-4 py-3 font-bold text-yellow-600">{row.bdr > 0 ? row.bdr : '-'}</td>
+                                                                <td className="px-4 py-3 font-black text-lg text-[#dc2626] border-l border-gray-100">{row.total}</td>
+                                                                <td className="px-4 py-3 text-left border-l border-gray-100 text-xs font-bold text-gray-700">
+                                                                    {plzTours.join(', ')}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-center">
+                                                                    <select
+                                                                        value={plzTours.length === 1 ? plzTours[0] : ''}
+                                                                        onChange={(e) => e.target.value && handleBulkAssignPlzToTour(row.plz, e.target.value, false)}
+                                                                        className="border border-gray-300 rounded-lg px-2 py-1 text-xs font-bold bg-white text-gray-800"
+                                                                    >
+                                                                        <option value="">-- PLZ an Tour zuweisen --</option>
+                                                                        {tours.map(tOpt => (
+                                                                            <option key={tOpt} value={tOpt}>→ {tOpt}</option>
+                                                                        ))}
+                                                                        <option value={getRegionalCorridorTour(row.plz, 0, 0)}>✨ Empfehlung: {getRegionalCorridorTour(row.plz, 0, 0)}</option>
+                                                                    </select>
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    })}
                                                 </tbody>
                                             </table>
                                         </div>
@@ -2666,13 +3742,139 @@
                             </>
                         ) : (
                             <div className="h-full flex items-center justify-center">
-                                <div className="bg-white p-12 rounded-xl border border-dashed border-gray-300 text-center w-full max-w-md">
-                                    <h3 className="mt-2 text-sm font-semibold text-gray-900">Warten auf Daten</h3>
-                                    <p className="mt-1 text-sm text-gray-500">Bitte laden Sie die Export-Datei (.csv / .tsv / .xlsx) hoch.</p>
+                                <div className="bg-white p-12 rounded-2xl border-2 border-dashed border-gray-300 text-center w-full max-w-lg shadow-sm">
+                                    <div className="w-16 h-16 bg-amber-100 text-[#351C15] rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl font-black">📦</div>
+                                    <h3 className="text-lg font-black text-gray-900">Morgen-Disposition bereit</h3>
+                                    <p className="mt-1 text-xs text-gray-500">Ziehen Sie die UPS Vorladungs-Datei (<b>ExpressForecast.xlsx</b>) oder den Kurier-Export (<b>.csv / .tsv</b>) hierher.</p>
+                                    <label className="mt-5 cursor-pointer inline-block text-xs font-black bg-[#FFB500] text-[#1e1410] hover:bg-yellow-500 py-2.5 px-6 rounded-xl shadow-sm transition-colors">
+                                        📂 Express-Datei auswählen
+                                        <input type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls" onChange={handleFileUpload} className="hidden" />
+                                    </label>
                                 </div>
                             </div>
                         )}
                     </div>
+
+                    {/* Модальное окно Fahrer-Manifest & Tour-Handover */}
+                    {manifestModalTour && (() => {
+                        const tb = dispositionTourBoard.find(x => x.tour === manifestModalTour);
+                        if (!tb) return null;
+                        return (
+                            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 md:p-8">
+                                <div className="bg-white w-full max-w-4xl max-h-[88vh] rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden">
+                                    <div className="bg-[#1e1410] text-white p-4 flex justify-between items-center shrink-0">
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="bg-[#FFB500] text-[#1e1410] font-black text-xs px-2 py-0.5 rounded">FAHRER-MANIFEST</span>
+                                                <h3 className="font-black text-base">{tb.tour}</h3>
+                                            </div>
+                                            <p className="text-xs text-slate-300 mt-0.5">
+                                                {tb.totalStops} Stopps ({tb.totalPackages} Pakete) • Strecke ~{tb.totalKm} km • Abfahrt {routeStartTime} Uhr → Ende ca. {tb.finishStr} Uhr
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={() => handleOptimizeSingleTour(tb.tour)}
+                                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg"
+                                            >
+                                                ⚡ Route SLA-optimieren
+                                            </button>
+                                            <button
+                                                onClick={() => handleCopyDriverWhatsApp(tb)}
+                                                className="bg-[#FFB500] hover:bg-yellow-400 text-[#1e1410] text-xs font-black px-3 py-1.5 rounded-lg"
+                                            >
+                                                📲 Für WhatsApp kopieren
+                                            </button>
+                                            <button
+                                                onClick={() => window.print()}
+                                                className="bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-lg"
+                                            >
+                                                🖨️ Drucken
+                                            </button>
+                                            <button onClick={() => setManifestModalTour(null)} className="w-8 h-8 rounded-full bg-white/10 hover:bg-red-500 text-white font-bold">✕</button>
+                                        </div>
+                                    </div>
+                                    <div className="p-4 bg-slate-50 border-b flex flex-wrap items-center justify-between gap-3 shrink-0">
+                                        <div className="flex items-center gap-3">
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-gray-500 uppercase">Fahrer Name</label>
+                                                <input
+                                                    type="text"
+                                                    value={tb.driverName}
+                                                    onChange={(e) => saveTourDriverMeta({ ...tourDriverMeta, [tb.tour]: { ...(tourDriverMeta[tb.tour] || {}), driver: e.target.value } })}
+                                                    placeholder="Fahrer eintragen..."
+                                                    className="border border-gray-300 rounded px-2.5 py-1 text-xs font-bold bg-white"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-gray-500 uppercase">Fahrzeug / Kennzeichen</label>
+                                                <input
+                                                    type="text"
+                                                    value={tb.vehicle}
+                                                    onChange={(e) => saveTourDriverMeta({ ...tourDriverMeta, [tb.tour]: { ...(tourDriverMeta[tb.tour] || {}), vehicle: e.target.value } })}
+                                                    placeholder="z.B. DD-SV 104"
+                                                    className="border border-gray-300 rounded px-2.5 py-1 text-xs font-bold bg-white"
+                                                />
+                                            </div>
+                                        </div>
+                                        {tb.googleNavUrl && (
+                                            <a
+                                                href={tb.googleNavUrl}
+                                                target="_blank"
+                                                className="bg-blue-600 hover:bg-blue-700 text-white font-black text-xs px-4 py-2 rounded-lg shadow-sm"
+                                            >
+                                                🧭 Komplette Route in Google Maps starten ↗
+                                            </a>
+                                        )}
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                                        <table className="min-w-full divide-y divide-gray-200 text-left text-xs border rounded-xl overflow-hidden">
+                                            <thead className="bg-gray-100">
+                                                <tr>
+                                                    <th className="p-2.5 font-bold text-gray-600">Stopp #</th>
+                                                    <th className="p-2.5 font-bold text-gray-600 text-center">SLA</th>
+                                                    <th className="p-2.5 font-bold text-gray-600 text-center">Prognose ETA</th>
+                                                    <th className="p-2.5 font-bold text-gray-600">PLZ / Ort / Straße</th>
+                                                    <th className="p-2.5 font-bold text-gray-600">Empfänger</th>
+                                                    <th className="p-2.5 font-bold text-gray-600 text-center">Pakete</th>
+                                                    <th className="p-2.5 font-bold text-gray-600 text-center">Umsetzen</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 bg-white">
+                                                {tb.stopSchedule.map((st) => (
+                                                    <tr key={st.key} className="hover:bg-blue-50/40">
+                                                        <td className="p-2.5 font-black text-gray-800">{st.stopIndex}.</td>
+                                                        <td className="p-2.5 text-center">
+                                                            <span className={"px-2 py-0.5 rounded font-black text-[10px] " + (st.commit === '09:00' ? 'bg-red-100 text-red-800' : st.commit === '10:30' ? 'bg-purple-100 text-purple-800' : st.commit === '12:00' ? 'bg-orange-100 text-orange-800' : 'bg-gray-100 text-gray-700')}>
+                                                                {st.commit}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-2.5 text-center font-bold">
+                                                            <span className={st.bufferMins < 0 && st.commit !== 'EOD' ? 'text-red-600 font-black' : 'text-emerald-700'}>
+                                                                {st.etaStr}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-2.5 font-semibold text-gray-800">{st.postalCode} {st.city}, {st.street}</td>
+                                                        <td className="p-2.5 text-gray-700">{st.recipient || '-'}</td>
+                                                        <td className="p-2.5 text-center font-black">{st.pkgCount}</td>
+                                                        <td className="p-2.5 text-center">
+                                                            <select
+                                                                value={tb.tour}
+                                                                onChange={(e) => handleAssignStopOrPlz(st.rows[0], e.target.value, 'stop')}
+                                                                className="border border-gray-300 rounded px-1.5 py-0.5 text-[11px] font-bold"
+                                                            >
+                                                                {tours.map(tOpt => <option key={tOpt} value={tOpt}>{tOpt}</option>)}
+                                                            </select>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     {/* Модальное окно настроек Google Maps Platform API */}
                     {showApiModal && (
