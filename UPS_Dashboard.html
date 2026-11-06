@@ -680,15 +680,15 @@
                             const hasFc = withIds.some(r => r.isForecast);
                             setIsForecastMode(hasFc);
                             if (hasFc) {
-                                const distResult = autoDistributeToNativeSTours(withIds);
-                                withIds = distResult.rows;
-                                if (distResult.didAssignFromPool) {
+                                const hadPool = withIds.some(r => !r.tour || r.tour === 'Prognosen (Vorladung)');
+                                withIds = autoDistributeToNativeSTours(withIds);
+                                if (hadPool) {
                                     GeoDB.saveReport('current_ups_data', withIds, (restoredReport && restoredReport.fileName) || 'ExpressForecast', true);
                                 }
                             }
-                            setData(withIds);
+                            setData(Array.isArray(withIds) ? withIds : []);
                             if (restoredReport && restoredReport.fileName) setFileName(restoredReport.fileName);
-                            const ut = [...new Set(withIds.map(r => r.tour))].sort();
+                            const ut = [...new Set((withIds || []).map(r => r.tour))].filter(t => t !== 'Prognosen (Vorladung)' || (withIds || []).some(r => r.tour === t)).sort();
                             setTours(ut);
                             setSelectedTours(ut);
                             const firstNonPool = ut.find(t => t !== 'Prognosen (Vorladung)');
