@@ -566,7 +566,7 @@
             const [validationProgress, setValidationProgress] = useState(0);
             const [slaRouteAnalysis, setSlaRouteAnalysis] = useState(null);
             const [isCalculatingSlaRoute, setIsCalculatingSlaRoute] = useState(false);
-            const [routeStartTime, setRouteStartTime] = useState('08:00');
+            const [routeStartTime, setRouteStartTime] = useState('08:30');
             const [serviceStopDuration, setServiceStopDuration] = useState(3);
             const [gpsTolerance, setGpsTolerance] = useState(100);
             const [gpsControlTour, setGpsControlTour] = useState('');
@@ -578,7 +578,7 @@
 
             // --- Morning Express Disposition States ---
             const [activeAssignTour, setActiveAssignTour] = useState('');
-            const [clickAssignScope, setClickAssignScope] = useState('stop'); // 'off' | 'stop' | 'plz'
+            const [clickAssignScope, setClickAssignScope] = useState('off'); // 'off' | 'stop' | 'plz'
             const [newTourInput, setNewTourInput] = useState('');
             const [autoClusterCount, setAutoClusterCount] = useState(6);
             const [autoClusterMode, setAutoClusterMode] = useState('stours'); // 'stours' | 'corridors' | 'kmeans'
@@ -593,7 +593,7 @@
             const [manifestModalTour, setManifestModalTour] = useState(null);
             const [showEveningTabs, setShowEveningTabs] = useState(false);
             const [showBeltSheetModal, setShowBeltSheetModal] = useState(false);
-            const [showCriticalPanel, setShowCriticalPanel] = useState(true);
+            const [showCriticalPanel, setShowCriticalPanel] = useState(false);
             const [onlyProblemToursFilter, setOnlyProblemToursFilter] = useState(false);
             const [toastMessage, setToastMessage] = useState(null);
 
@@ -691,8 +691,6 @@
                             const ut = [...new Set((withIds || []).map(r => r.tour))].filter(t => t !== 'Prognosen (Vorladung)' || (withIds || []).some(r => r.tour === t)).sort();
                             setTours(ut);
                             setSelectedTours(ut);
-                            const firstNonPool = ut.find(t => t !== 'Prognosen (Vorladung)');
-                            if (firstNonPool) setActiveAssignTour(firstNonPool);
                         }
                     } catch (e) { console.error('DB Init failed', e); }
                 };
@@ -1449,9 +1447,6 @@
                 setData(combinedData);
                 setTours(uniqueTours);
                 setSelectedTours(uniqueTours);
-                if (uniqueTours.length > 0 && !activeAssignTour) {
-                    setActiveAssignTour(uniqueTours[0]);
-                }
                 setIdleTourFilter('Alle');
 
                 try {
@@ -1546,13 +1541,7 @@
             };
 
             const toggleTourSelection = (tour) => {
-                setSelectedTours(prev => {
-                    if (prev.includes(tour)) {
-                        return prev.length > 1 ? prev.filter(t => t !== tour) : prev;
-                    } else {
-                        return [...prev, tour];
-                    }
-                });
+                setSelectedTours(prev => prev.includes(tour) ? prev.filter(t => t !== tour) : [...prev, tour]);
             };
 
             const clearTourSelection = () => setSelectedTours([]);
@@ -2019,16 +2008,17 @@
                 setData(finalData);
                 setTours(finalTours);
                 setSelectedTours(finalTours);
-                if (finalTours.length > 0) setActiveAssignTour(finalTours[0]);
+                setActiveAssignTour('');
+                setClickAssignScope('off');
                 await GeoDB.saveReport('current_ups_data', finalData, fileName || 'Disposition', isForecastMode);
                 const modeLabel = mode === 'stours' ? 'Reale S-Touren (S01–S42 Oktober-ZIV)' : mode === 'corridors' ? '8 Regional-Korridore' : `${numTours} K-Means Cluster`;
                 showToast(`⚡ Auto-Disposition (${modeLabel}): ${poolRows.length} Sendungen auf ${finalTours.length} Touren verteilt & SLA-optimiert!`);
             };
 
-            // Live Tour Board Summary & SLA Feasibility Calculation per Tour
+            // Live Tour Board Summary, SLA Feasibility & Invisible Standard-Parcel Workload Calculation per Tour
             const dispositionTourBoard = useMemo(() => {
                 if (!data.length) return [];
-                const [startH, startM] = (routeStartTime || '08:00').split(':').map(Number);
+                const [startH, startM] = (routeStartTime || '08:30').split(':').map(Number);
                 const baseStartMins = (startH || 8) * 60 + (startM || 0);
                 const stopDur = Number(serviceStopDuration) || 3;
                 const zivTours = (typeof SVD_ZIV_INTELLIGENCE !== 'undefined' && SVD_ZIV_INTELLIGENCE.tours) ? SVD_ZIV_INTELLIGENCE.tours : {};
@@ -2042,6 +2032,9 @@
                     const rows = data.filter(r => r.tour === tName).sort((a, b) => a.seq - b.seq);
                     const isPool = tName === 'Prognosen (Vorladung)';
                     const zMeta = zivTours[tName] || {};
+                    const isSpringer = !!zMeta.isSpringer || tName.endsWith('H');
+                    const avgDailyStops = zMeta.avgStops || (isSpringer ? 12 : 72);
+                    const stopsPerHour = zMeta.stopsPerHour || (isSpringer ? 5.0 : 7.8);
                     const stopMap = new Map();
                     let count0900 = 0, count1030 = 0, count1200 = 0, countEod = 0, countBdr = 0;
 
@@ -2086,13 +2079,20 @@
                     });
 
                     const uniqueStops = Array.from(stopMap.values());
-                    let curMins = baseStartMins;
+                    // Oбычные водители (S01-S42) ждут окончания ленты (baseStartMins, напр. 08:30), т.к. грузят 60-95 обычных стопов.
+                    // Экспресс-спрингеры (S1H-S4H) не везут стандарт и могут выехать на 25 мин раньше!
+                    const tourStartMins = isSpringer ? Math.max(7 * 60 + 50, baseStartMins - 25) : baseStartMins;
+                    const tourStartStr = `${String(Math.floor(tourStartMins / 60)).padStart(2, '0')}:${String(tourStartMins % 60).padStart(2, '0')}`;
+                    const estStandardStops = (isSpringer || isPool) ? 0 : Math.max(0, avgDailyStops - uniqueStops.length);
+
+                    let curMins = tourStartMins;
                     let prevLat = DEPOT_LAT;
                     let prevLng = DEPOT_LNG;
                     let totalKm = 0;
                     let slaConflicts = 0;
                     let tightStops = 0;
                     let redirectedStops = 0;
+                    let outlierStops = 0;
                     const cachedOsrm = osrmRoutings[tName];
 
                     const stopSchedule = uniqueStops.map((st, idx) => {
@@ -2107,7 +2107,9 @@
                             driveTime = fallback.driveTime;
                         }
                         totalKm += distanceKm;
-                        curMins += driveTime;
+                        // Для обычных туров (S01-S42) между точками 12:00 в районе добавляем реалистичный буфер попутной работы с кузовом (+2 мин)
+                        const stdMitnahmeBuffer = (!isSpringer && !isPool && idx > 0 && st.commit !== '09:00' && st.commit !== '10:30') ? 2 : 0;
+                        curMins += driveTime + stdMitnahmeBuffer;
                         const etaH = Math.floor(curMins / 60);
                         const etaM = curMins % 60;
                         const etaStr = `${String(etaH).padStart(2, '0')}:${String(etaM).padStart(2, '0')}`;
@@ -2125,6 +2127,13 @@
                         if (!isPool && st.histPrimaryTour && st.histPrimaryTour !== tName) {
                             redirectedStops++;
                         }
+
+                        // Детектор «Отрыва от стандартного района» (Gebiets-Ausreißer):
+                        // Если экспресс заставляет обычного водителя делать перегон >= 11 км внутри района, сколько обычных стопов он из-за этого теряет?
+                        const isOutlier = !isSpringer && !isPool && idx > 0 && distanceKm >= 11;
+                        const lostStdStops = isOutlier ? Math.max(1, Math.round(((driveTime + stopDur) / 60) * stopsPerHour)) : 0;
+                        if (isOutlier) outlierStops++;
+
                         curMins += stopDur;
                         prevLat = st.lat || prevLat;
                         prevLng = st.lng || prevLng;
@@ -2135,11 +2144,21 @@
                             distanceKm: distanceKm.toFixed(1),
                             driveTime,
                             etaStr,
-                            bufferMins
+                            bufferMins,
+                            isOutlier,
+                            lostStdStops
                         };
                     });
 
-                    const finishStr = stopSchedule.length > 0 ? stopSchedule[stopSchedule.length - 1].etaStr : routeStartTime;
+                    const finishStr = stopSchedule.length > 0 ? stopSchedule[stopSchedule.length - 1].etaStr : tourStartStr;
+                    // Прогноз полного рабочего дня с учетом скрытых обычных посылок (estStandardStops при скорости stopsPerHour + 30 мин пауза)
+                    const stdDurationMins = (!isSpringer && !isPool && estStandardStops > 0)
+                        ? Math.round((estStandardStops / stopsPerHour) * 60) + 30
+                        : 0;
+                    const dayEndMins = curMins + stdDurationMins;
+                    const estDayEndStr = `${String(Math.floor(dayEndMins / 60)).padStart(2, '0')}:${String(dayEndMins % 60).padStart(2, '0')}`;
+                    const isDayOverloaded = !isSpringer && !isPool && (dayEndMins > 17 * 60 + 30 || totalKm > 90);
+
                     const navStops = stopSchedule.slice(0, 10);
                     const waypointsStr = navStops.slice(0, -1).map(s => `${s.lat},${s.lng}`).join('|');
                     const lastStop = navStops[navStops.length - 1];
@@ -2153,10 +2172,16 @@
                     return {
                         tour: tName,
                         isPool,
-                        isSpringer: !!zMeta.isSpringer || tName.endsWith('H'),
+                        isSpringer,
                         areaName: zMeta.area || '',
                         avgFirstStop: zMeta.avgFirstStop || '',
-                        stopsPerHour: zMeta.stopsPerHour || 0,
+                        stopsPerHour,
+                        avgDailyStops,
+                        estStandardStops,
+                        tourStartStr,
+                        estDayEndStr,
+                        isDayOverloaded,
+                        outlierStops,
                         color,
                         hasRealRoad: !!(cachedOsrm && cachedOsrm.fullRoadGeom),
                         totalPackages: rows.length,
@@ -3155,7 +3180,7 @@
                                                 <span className="text-[11px] font-black text-gray-700 whitespace-nowrap">🎯 Karten-Klick:</span>
                                                 <div className="flex rounded-lg border border-gray-300 overflow-hidden text-[10px] font-bold shrink-0">
                                                     <button
-                                                        onClick={() => setClickAssignScope('off')}
+                                                        onClick={() => { setClickAssignScope('off'); setActiveAssignTour(''); }}
                                                         className={"px-2 py-1 whitespace-nowrap " + (clickAssignScope === 'off' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50')}
                                                     >
                                                         Info
@@ -3175,11 +3200,16 @@
                                                 </div>
                                                 <select
                                                     value={activeAssignTour}
-                                                    onChange={(e) => setActiveAssignTour(e.target.value)}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        setActiveAssignTour(val);
+                                                        if (!val) setClickAssignScope('off');
+                                                        else if (clickAssignScope === 'off') setClickAssignScope('stop');
+                                                    }}
                                                     className="w-24 border border-gray-300 rounded-lg px-1.5 py-1 text-[11px] font-black bg-blue-50 text-blue-900 shrink-0"
                                                     title="Ziel-Tour für Klick-Zuweisung auf der Karte"
                                                 >
-                                                    <option value="">Ziel...</option>
+                                                    <option value="">Ziel aus</option>
                                                     {['S1H', 'S2H', 'S3H', 'S4H', ...tours.filter(t => t !== 'Prognosen (Vorladung)' && !['S1H', 'S2H', 'S3H', 'S4H'].includes(t))].map(t => (
                                                         <option key={t} value={t}>{t}</option>
                                                     ))}
@@ -3236,7 +3266,7 @@
                                                     .filter(tb => !onlyProblemToursFilter || tb.isPool || tb.slaConflicts > 0 || tb.isSpringer || tb.count0900 > 0 || tb.redirectedStops > 0)
                                                     .map((tb) => {
                                                         const isSelected = selectedTours.includes(tb.tour);
-                                                        const isTarget = activeAssignTour === tb.tour;
+                                                        const isTarget = activeAssignTour === tb.tour && clickAssignScope !== 'off';
                                                         return (
                                                             <div
                                                                 key={tb.tour}
@@ -3262,7 +3292,7 @@
                                                                             </div>
                                                                             {tb.driverName && (
                                                                                 <div className="text-[10px] text-gray-500 font-semibold truncate">
-                                                                                    👤 {tb.driverName}
+                                                                                    👤 {tb.driverName} {tb.avgFirstStop ? `• Ø 1.Stp ${tb.avgFirstStop}` : ''}
                                                                                 </div>
                                                                             )}
                                                                         </div>
@@ -3271,41 +3301,60 @@
                                                                         {!tb.isPool && (
                                                                             <button
                                                                                 onClick={() => {
-                                                                                    setActiveAssignTour(tb.tour);
-                                                                                    if (clickAssignScope === 'off') setClickAssignScope('stop');
-                                                                                    showToast(`🎯 Klick-Zuweisung aktiv für: ${tb.tour}`);
+                                                                                    if (isTarget) {
+                                                                                        setActiveAssignTour('');
+                                                                                        setClickAssignScope('off');
+                                                                                        showToast('ℹ️ Klick-Zuweisung deaktiviert');
+                                                                                    } else {
+                                                                                        setActiveAssignTour(tb.tour);
+                                                                                        if (clickAssignScope === 'off') setClickAssignScope('stop');
+                                                                                        showToast(`🎯 Klick-Zuweisung aktiv für: ${tb.tour} (Nochmal klicken zum Ausschalten)`);
+                                                                                    }
                                                                                 }}
                                                                                 className={"px-1.5 py-0.5 rounded text-[10px] font-black border whitespace-nowrap " + (isTarget ? "bg-blue-600 text-white border-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50")}
-                                                                                title="Auf Karte klicken, um Stopps dieser Tour zuzuweisen"
+                                                                                title={isTarget ? "Klicken, um Ziel-Modus für diese Tour auszuschalten" : "Auf Karte klicken, um Stopps dieser Tour zuzuweisen"}
                                                                             >
-                                                                                {isTarget ? '🎯 Aktiv' : '🎯 Ziel'}
+                                                                                {isTarget ? '🎯 Aktiv ✕' : '🎯 Ziel'}
                                                                             </button>
                                                                         )}
                                                                         <button
                                                                             onClick={() => setManifestModalTour(tb.tour)}
                                                                             className="px-1.5 py-0.5 rounded bg-slate-800 text-white text-[10px] font-bold hover:bg-black whitespace-nowrap"
-                                                                            title="Fahrer-Manifest & Stopp-Liste öffnen"
+                                                                            title={`Fahrer-Manifest öffnen: ${tb.totalStops} Express-Stopps + ca. ${tb.estStandardStops} Standard-Stopps (Ø ${tb.avgDailyStops} Stopps/Tag aus ZIV)`}
                                                                         >
-                                                                            {tb.totalStops} Stp
+                                                                            {tb.totalStops} Exp{tb.estStandardStops > 0 ? ` +~${tb.estStandardStops} Std` : ''}
                                                                         </button>
                                                                     </div>
                                                                 </div>
 
-                                                                {/* SLA Pills & Metrics */}
+                                                                {/* SLA Pills & Full-Day Standard Workload Metrics */}
                                                                 <div className="flex items-center justify-between text-[10px] font-bold gap-1">
                                                                     <div className="flex items-center gap-1 flex-wrap">
                                                                         {tb.count0900 > 0 && <span className="px-1.5 py-0.2 rounded bg-red-100 text-red-800 border border-red-300">09:00×{tb.count0900}</span>}
                                                                         {tb.count1030 > 0 && <span className="px-1.5 py-0.2 rounded bg-purple-100 text-purple-800 border border-purple-300">10:30×{tb.count1030}</span>}
                                                                         {tb.count1200 > 0 && <span className="px-1.5 py-0.2 rounded bg-orange-100 text-orange-800 border border-orange-300">12:00×{tb.count1200}</span>}
                                                                         {tb.countEod > 0 && <span className="px-1.5 py-0.2 rounded bg-gray-100 text-gray-700">EOD×{tb.countEod}</span>}
+                                                                        {tb.outlierStops > 0 && (
+                                                                            <span className="px-1 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300" title={`${tb.outlierStops} weit entfernte Express-Stopps (>11km Anfahrt) kosten Zeit für normale Standard-Pakete`}>
+                                                                                ⚠️ {tb.outlierStops} Ausreißer
+                                                                            </span>
+                                                                        )}
                                                                     </div>
                                                                     {!tb.isPool && (
                                                                         <div className="flex items-center gap-1 shrink-0">
                                                                             <span className="text-gray-400">~{tb.totalKm}km</span>
                                                                             {tb.slaConflicts > 0 ? (
-                                                                                <span className="text-red-700 bg-red-100 px-1.5 rounded font-black">⚠️ {tb.slaConflicts} SLA</span>
+                                                                                <span className="text-red-700 bg-red-100 px-1.5 rounded font-black" title="Express-SLA wird überschritten!">⚠️ {tb.slaConflicts} SLA</span>
                                                                             ) : (
-                                                                                <span className="text-emerald-700 bg-emerald-100 px-1.5 rounded font-black">✓ {tb.finishStr}</span>
+                                                                                <span className="text-emerald-700 bg-emerald-100 px-1.5 rounded font-black" title={`Letzter Express-Stopp um ${tb.finishStr} Uhr`}>✓ {tb.finishStr}</span>
+                                                                            )}
+                                                                            {tb.estStandardStops > 0 && (
+                                                                                <span
+                                                                                    className={"px-1 rounded text-[9px] font-black " + (tb.isDayOverloaded ? "bg-amber-100 text-amber-900 border border-amber-300" : "bg-slate-100 text-slate-600")}
+                                                                                    title={`Prognose Tourende inkl. ~${tb.estStandardStops} normale Standard-Stopps (bei Ø ${tb.stopsPerHour} Stopps/Std. + 30m Pause)`}
+                                                                                >
+                                                                                    Tag ~{tb.estDayEndStr}
+                                                                                </span>
                                                                             )}
                                                                         </div>
                                                                     )}
@@ -3324,7 +3373,7 @@
                                             <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[1000] bg-blue-700/95 text-white px-4 py-1.5 rounded-full shadow-2xl border-2 border-white flex items-center gap-3 text-xs font-black pointer-events-auto whitespace-nowrap">
                                                 <span>🎯 KLICK-MODUS: Marker anklicken → <u>{activeAssignTour}</u> ({clickAssignScope === 'plz' ? 'Ganze PLZ' : 'Stopp'})</span>
                                                 <button
-                                                    onClick={() => setClickAssignScope('off')}
+                                                    onClick={() => { setClickAssignScope('off'); setActiveAssignTour(''); }}
                                                     className="bg-white/20 hover:bg-white/30 px-2 py-0.5 rounded-full text-[10px]"
                                                 >
                                                     Beenden ✕
@@ -3542,32 +3591,47 @@
                                                                     </div>
                                                                 )}
                                                                 {!tb.isPool && tb.avgFirstStop && (
-                                                                    <div className="mt-1 text-[10px] text-gray-500 font-semibold flex items-center gap-2">
-                                                                        <span>⏱ Okt-1.Stopp: <b>{tb.avgFirstStop}</b></span>
+                                                                    <div className="mt-1 text-[10px] text-gray-500 font-semibold flex items-center gap-2 flex-wrap">
+                                                                        <span>⏱ Ø 1.Stopp: <b>{tb.avgFirstStop}</b></span>
                                                                         {tb.stopsPerHour > 0 && <span>• Ø <b>{tb.stopsPerHour}</b> Stp/h</span>}
+                                                                        {tb.estStandardStops > 0 && <span className="text-slate-700">• Ø <b>{tb.avgDailyStops}</b> Ges.-Stp/Tag</span>}
                                                                     </div>
                                                                 )}
                                                             </div>
                                                             <div className="text-right shrink-0">
-                                                                <div className="text-base font-black text-gray-900">{tb.totalStops} <span className="text-[10px] font-bold text-gray-500">Stopps</span></div>
-                                                                <div className="text-[10px] font-bold text-gray-500">{tb.totalPackages} Pakete</div>
+                                                                <div className="text-base font-black text-gray-900">{tb.totalStops} <span className="text-[10px] font-bold text-gray-500">Exp.-Stp</span></div>
+                                                                {tb.estStandardStops > 0 ? (
+                                                                    <div className="text-[10px] font-black text-slate-700 bg-slate-200/80 px-1.5 py-0.5 rounded mt-0.5" title={`Geschätzte normale Standard-Stopps heute (aus ZIV-Durchschnitt Ø ${tb.avgDailyStops} Stopps/Tag abzüglich ${tb.totalStops} Express-Stopps)`}>
+                                                                        + ~{tb.estStandardStops} Std.-Stp
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="text-[10px] font-bold text-gray-500">{tb.totalPackages} Pakete</div>
+                                                                )}
                                                             </div>
                                                         </div>
 
-                                                        {/* SLA & Route Health Bar */}
+                                                        {/* SLA & Route Health Bar (with Full-Day Standard Projection) */}
                                                         <div className="px-3 py-2 bg-slate-50 border-b border-gray-200 flex items-center justify-between text-[11px] font-bold flex-wrap gap-1">
-                                                            <div className="flex items-center gap-1">
+                                                            <div className="flex items-center gap-1 flex-wrap">
                                                                 <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800">09:00: {tb.count0900}</span>
                                                                 <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">10:30: {tb.count1030}</span>
                                                                 <span className="px-1.5 py-0.5 rounded bg-orange-100 text-orange-800">12:00: {tb.count1200}</span>
                                                             </div>
                                                             {!tb.isPool && (
-                                                                <div className="flex items-center gap-1.5">
+                                                                <div className="flex items-center gap-1.5 flex-wrap">
                                                                     <span className="text-slate-600">🛣️ {tb.totalKm} km</span>
                                                                     {tb.slaConflicts > 0 ? (
-                                                                        <span className="bg-red-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">⚠️ {tb.slaConflicts} SLA-Konflikt</span>
+                                                                        <span className="bg-red-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">⚠️ {tb.slaConflicts} SLA</span>
                                                                     ) : (
-                                                                        <span className="bg-emerald-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">✓ SLA OK ({tb.finishStr})</span>
+                                                                        <span className="bg-emerald-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">✓ Exp. {tb.finishStr}</span>
+                                                                    )}
+                                                                    {tb.estStandardStops > 0 && (
+                                                                        <span
+                                                                            className={"px-2 py-0.5 rounded-full text-[10px] font-black " + (tb.isDayOverloaded ? "bg-amber-500 text-white" : "bg-slate-200 text-slate-800")}
+                                                                            title={`Geschätztes Tourende inkl. ~${tb.estStandardStops} normale Standard-Stopps (bei Ø ${tb.stopsPerHour} Stopps/Std. + 30m Pause)`}
+                                                                        >
+                                                                            Tag ~{tb.estDayEndStr}
+                                                                        </span>
                                                                     )}
                                                                 </div>
                                                             )}
@@ -3580,7 +3644,7 @@
                                                                 const isConflict = !tb.isPool && st.bufferMins < 0 && st.commit !== 'EOD';
                                                                 const isRedirected = !tb.isPool && st.histPrimaryTour && st.histPrimaryTour !== tb.tour;
                                                                 return (
-                                                                    <div key={st.key} className={"py-2 px-1.5 hover:bg-blue-50/50 transition-colors flex items-start justify-between gap-2 text-xs " + (isConflict ? "bg-red-50/80" : isRedirected ? "bg-indigo-50/40" : "")}>
+                                                                    <div key={st.key} className={"py-2 px-1.5 hover:bg-blue-50/50 transition-colors flex items-start justify-between gap-2 text-xs " + (isConflict ? "bg-red-50/80" : st.isOutlier ? "bg-amber-50/50" : isRedirected ? "bg-indigo-50/40" : "")}>
                                                                         <div className="min-w-0 flex-1">
                                                                             <div className="flex items-center gap-1.5 flex-wrap">
                                                                                 <span className="font-black text-gray-500">#{st.stopIndex}</span>
@@ -3591,6 +3655,11 @@
                                                                                     </span>
                                                                                 )}
                                                                                 {st.pkgCount > 1 && <span className="bg-amber-100 text-amber-900 px-1 rounded text-[10px] font-bold">{st.pkgCount} Pkt</span>}
+                                                                                {st.isOutlier && (
+                                                                                    <span className="bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.2 rounded text-[9px] font-black" title={`Weiter Umweg (${st.distanceKm} km): Frisst ca. ${st.lostStdStops} normale Standard-Stopps dieser Tour!`}>
+                                                                                        ⚠️ {st.distanceKm}km (~{st.lostStdStops} Std.-Stp)
+                                                                                    </span>
+                                                                                )}
                                                                                 {isRedirected && (
                                                                                     <button
                                                                                         onClick={() => handleAssignStopOrPlz(st.rows[0], st.histPrimaryTour, 'stop')}
@@ -3603,7 +3672,7 @@
                                                                             </div>
                                                                             <div className="font-bold text-gray-800 truncate mt-0.5" title={st.recipient}>{st.recipient || st.street}</div>
                                                                             <div className="text-[11px] text-gray-500 truncate">{st.postalCode} {st.city}, {st.street}</div>
-                                                                            {(isConflict || st.commit === '09:00') && (
+                                                                            {(isConflict || st.commit === '09:00' || st.isOutlier) && (
                                                                                 <div className="mt-1 flex items-center gap-1 flex-wrap">
                                                                                     {st.histAltTour && st.histAltTour !== tb.tour && (
                                                                                         <button
