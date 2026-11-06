@@ -30,7 +30,8 @@ try {
             address_key TEXT PRIMARY KEY,
             lat REAL NOT NULL,
             lng REAL NOT NULL,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            location_type TEXT DEFAULT ""
         );
         CREATE TABLE IF NOT EXISTS plz_coords (
             plz TEXT PRIMARY KEY,
@@ -51,16 +52,25 @@ try {
             updated_at INTEGER NOT NULL
         );
     ');
+    try {
+        $pdo->exec('ALTER TABLE geocache ADD COLUMN location_type TEXT DEFAULT ""');
+    } catch (Throwable $ignore) {}
+    try {
+        $pdo->exec('DELETE FROM geocache WHERE updated_at < 1793940000');
+    } catch (Throwable $ignore) {}
 
     $action = isset($_GET['action']) ? $_GET['action'] : 'init';
 
     if ($action === 'init') {
         $coords = [];
-        $stmt = $pdo->query('SELECT address_key, lat, lng FROM geocache');
+        $stmt = $pdo->query('SELECT address_key, lat, lng, location_type FROM geocache');
         while ($row = $stmt->fetch()) {
+            $locT = isset($row['location_type']) ? (string)$row['location_type'] : '';
             $coords[$row['address_key']] = [
                 'lat' => (float)$row['lat'],
-                'lng' => (float)$row['lng']
+                'lng' => (float)$row['lng'],
+                'locationType' => $locT,
+                'verifiedRoof' => ($locT === 'ROOFTOP' || $locT === 'RANGE_INTERPOLATED')
             ];
         }
 
@@ -128,11 +138,14 @@ try {
 
     if ($action === 'coords') {
         $coords = [];
-        $stmt = $pdo->query('SELECT address_key, lat, lng FROM geocache');
+        $stmt = $pdo->query('SELECT address_key, lat, lng, location_type FROM geocache');
         while ($row = $stmt->fetch()) {
+            $locT = isset($row['location_type']) ? (string)$row['location_type'] : '';
             $coords[$row['address_key']] = [
                 'lat' => (float)$row['lat'],
-                'lng' => (float)$row['lng']
+                'lng' => (float)$row['lng'],
+                'locationType' => $locT,
+                'verifiedRoof' => ($locT === 'ROOFTOP' || $locT === 'RANGE_INTERPOLATED')
             ];
         }
         echo json_encode(['ok' => true, 'coords' => $coords], JSON_UNESCAPED_UNICODE);
@@ -150,14 +163,15 @@ try {
         if (!empty($items) || !empty($plzItems)) {
             $pdo->beginTransaction();
             if (!empty($items)) {
-                $stmt = $pdo->prepare('INSERT OR REPLACE INTO geocache (address_key, lat, lng, updated_at) VALUES (:k, :lat, :lng, :ts)');
+                $stmt = $pdo->prepare('INSERT OR REPLACE INTO geocache (address_key, lat, lng, updated_at, location_type) VALUES (:k, :lat, :lng, :ts, :lt)');
                 foreach ($items as $k => $val) {
                     if (isset($val['lat']) && isset($val['lng'])) {
                         $stmt->execute([
                             ':k' => (string)$k,
                             ':lat' => (float)$val['lat'],
                             ':lng' => (float)$val['lng'],
-                            ':ts' => $now
+                            ':ts' => $now,
+                            ':lt' => isset($val['locationType']) ? (string)$val['locationType'] : ''
                         ]);
                         $saved++;
                     }

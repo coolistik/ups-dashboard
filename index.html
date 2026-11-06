@@ -651,14 +651,23 @@
                         const restoredReport = await GeoDB.getReport('current_ups_data');
                         const restoredRows = restoredReport && Array.isArray(restoredReport.data) ? restoredReport.data : (Array.isArray(restoredReport) ? restoredReport : null);
                         if (restoredRows && restoredRows.length > 0) {
+                            const seenAddr = {};
                             const withIds = restoredRows.map((r, idx) => {
                                 const item = { ...r, _uid: r._uid || `pkg_${idx}_${r.trackingNr || r.seq}` };
                                 if (item.isForecast) {
                                     const nk = normalizeAddressKey(item.street, item.postalCode, item.city);
                                     const hit = allData[nk];
                                     if (hit && hit.lat && hit.lng) {
-                                        item.lat = hit.lat + (((item.seq || idx) % 7) - 3) * 0.00006;
-                                        item.lng = hit.lng + (((item.seq || idx) % 5) - 2) * 0.00006;
+                                        const occ = seenAddr[nk] || 0;
+                                        seenAddr[nk] = occ + 1;
+                                        if (occ === 0) {
+                                            item.lat = hit.lat;
+                                            item.lng = hit.lng;
+                                        } else {
+                                            const ang = occ * 2.094;
+                                            item.lat = hit.lat + Math.cos(ang) * 0.000035 * Math.ceil(occ / 3);
+                                            item.lng = hit.lng + Math.sin(ang) * 0.000050 * Math.ceil(occ / 3);
+                                        }
                                     }
                                 }
                                 return item;
@@ -1383,14 +1392,25 @@
 
                 // Функция привязки координат из БД (SQLite / IndexedDB / DEFAULT_PLZ_COORDS)
                 const applyCoordsToForecast = (rowsList, dict) => {
+                    const addrSeenCount = {};
                     return rowsList.map(d => {
                         if (d.isForecast) {
                             const normKey = normalizeAddressKey(d.street, d.postalCode, d.city);
                             const legacyKey = `${(d.street || '').replace(/\*/g, 's')} ${d.postalCode || ''} ${d.city || ''}`.trim();
                             const hit = dict[normKey] || dict[legacyKey];
                             if (hit && hit.lat && hit.lng) {
-                                d.lat = hit.lat + ((d.seq % 7) - 3) * 0.00008;
-                                d.lng = hit.lng + ((d.seq % 5) - 2) * 0.00008;
+                                const occurrence = addrSeenCount[normKey] || 0;
+                                addrSeenCount[normKey] = occurrence + 1;
+                                // Первый стоп по этому адресу встаёт в точную координату ROOFTOP (0 м отклонения),
+                                // а дубли по тому же адресу сдвигаются на ~2 м, чтобы кружки не сливались
+                                if (occurrence === 0) {
+                                    d.lat = hit.lat;
+                                    d.lng = hit.lng;
+                                } else {
+                                    const angle = occurrence * 2.094;
+                                    d.lat = hit.lat + Math.cos(angle) * 0.000035 * Math.ceil(occurrence / 3);
+                                    d.lng = hit.lng + Math.sin(angle) * 0.000050 * Math.ceil(occurrence / 3);
+                                }
                             } else {
                                 const defaultFallback = DEFAULT_PLZ_COORDS[d.postalCode] || DEFAULT_PLZ_COORDS['01067'] || { lat: 51.0507, lng: 13.7373 };
                                 const seqIndex = d.seq || 1;
@@ -1408,15 +1428,13 @@
                     combinedData = applyCoordsToForecast(combinedData, coordsDict);
                 }
 
-                // Мгновенно отображаем данные в дашборде (не блокируя интерфейс сетевым геокодингом!)
+                // Мгновенно отображаем данные в дашборде
                 combinedData = combinedData.map((r, idx) => ({ ...r, _uid: r._uid || `pkg_${idx}_${r.trackingNr || r.seq}` }));
                 const uniqueTours = [...new Set(combinedData.map(r => r.tour))].sort();
                 setData(combinedData);
                 setTours(uniqueTours);
                 setSelectedTours(uniqueTours);
                 setIdleTourFilter('Alle');
-                setLoadingStatus('Fertig!');
-                setLoadingProgress(100);
 
                 try {
                     await GeoDB.saveReport('current_ups_data', combinedData, currentUploadName, hasForecast);
@@ -1424,7 +1442,7 @@
                     console.error('Failed to save persistence data', err);
                 }
 
-                // Автоматический Google ROOFTOP + Google Places каскад при загрузке файла для всех новых/неточных адресов
+                // Автоматический Google ROOFTOP + Google Places каскад прямо в момент загрузки файла
                 if (hasForecast) {
                     const missingMap = new Map();
                     combinedData.forEach(d => {
@@ -1432,10 +1450,12 @@
                         const normKey = normalizeAddressKey(d.street, d.postalCode, d.city);
                         const legacyKey = `${(d.street || '').replace(/\*/g, 's')} ${d.postalCode || ''} ${d.city || ''}`.trim();
                         const cached = coordsDict[normKey] || coordsDict[legacyKey];
-                        if (cached && cached.lat && cached.lng && cached.locationType !== 'APPROXIMATE') return;
+                        // Пропускаем только те адреса, которые УЖЕ имеют подтверждённый статус ROOFTOP от Google
+                        if (cached && cached.lat && cached.lng && (cached.locationType === 'ROOFTOP' || cached.verifiedRoof === true)) return;
                         if (!missingMap.has(normKey)) {
                             missingMap.set(normKey, {
                                 addrKey: normKey,
+                                legacyKey,
                                 queryStr: `${d.street || ''} ${d.house || ''}, ${d.postalCode || ''} ${d.city || ''}, Germany`.replace(/\s+/g, ' ').trim(),
                                 recipient: d.recipient || ''
                             });
@@ -1444,10 +1464,13 @@
                     const missingAddrs = Array.from(missingMap.values());
 
                     if (missingAddrs.length > 0) {
-                        const maxGCalls = Math.min(missingAddrs.length, 300);
-                        const CHUNK_SIZE = googleApiKey ? 15 : 6;
+                        const maxGCalls = Math.min(missingAddrs.length, 350);
+                        const CHUNK_SIZE = googleApiKey ? 20 : 6;
                         let addrsProcessed = 0;
                         const newGeoEntries = {};
+
+                        setLoadingStatus(`📍 Google ROOFTOP & Places Prüfung... 0/${maxGCalls}`);
+                        setLoadingProgress(5);
 
                         for (let i = 0; i < maxGCalls; i += CHUNK_SIZE) {
                             const chunk = missingAddrs.slice(i, Math.min(i + CHUNK_SIZE, maxGCalls));
@@ -1458,25 +1481,34 @@
                                         const val = {
                                             lat: geo.lat,
                                             lng: geo.lng,
-                                            locationType: geo.locationType,
+                                            locationType: geo.locationType || 'ROOFTOP',
+                                            verifiedRoof: true,
                                             formattedAddress: geo.formattedAddress
                                         };
                                         coordsDict[item.addrKey] = val;
                                         newGeoEntries[item.addrKey] = val;
+                                        if (item.legacyKey) {
+                                            coordsDict[item.legacyKey] = val;
+                                            newGeoEntries[item.legacyKey] = val;
+                                        }
                                     }
                                 } catch (_) {}
                                 addrsProcessed++;
                             }));
 
-                            setLoadingStatus(`Auto-ROOFTOP & Places (${googleApiKey ? 'Google Maps' : 'OSM'})... ${addrsProcessed}/${maxGCalls}`);
+                            setLoadingStatus(`📍 Google ROOFTOP & Places (${googleApiKey ? 'Google Maps' : 'OSM'})... ${addrsProcessed}/${maxGCalls}`);
                             setLoadingProgress(Math.round((addrsProcessed / maxGCalls) * 100));
+
+                            // Живое обновление точек на карте после каждой пачки!
+                            const liveData = applyCoordsToForecast([...combinedData], coordsDict);
+                            setData(liveData);
 
                             if (Object.keys(newGeoEntries).length > 0) {
                                 await GeoDB.setBulk({ ...newGeoEntries });
                                 Object.keys(newGeoEntries).forEach(k => delete newGeoEntries[k]);
                             }
                             if (i + CHUNK_SIZE < maxGCalls) {
-                                await new Promise(r => setTimeout(r, googleApiKey ? 60 : 350));
+                                await new Promise(r => setTimeout(r, googleApiKey ? 40 : 350));
                             }
                         }
 
@@ -1487,6 +1519,8 @@
                     }
                 }
 
+                setLoadingStatus('Fertig!');
+                setLoadingProgress(100);
                 setTimeout(() => {
                     setLoadingStatus('');
                     setLoadingProgress(0);
