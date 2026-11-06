@@ -2505,17 +2505,30 @@
                         const googlePlacesSearchUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((stop.recipient ? stop.recipient + ' ' : '') + (stop.street || '') + ' ' + (stop.postalCode || '') + ' ' + (stop.city || ''))}`;
 
                         const popupContent = document.createElement('div');
-                        const tourButtonsHtml = tours.filter(t => t !== tour).slice(0, 8).map(t =>
-                            `<button data-assign-tour="${t}" class="popup-tour-btn" style="padding:3px 6px;background:#f8fafc;color:#1e293b;border:1px solid #cbd5e1;border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">→ ${t}</button>`
-                        ).join('');
-                        popupContent.innerHTML = '<div style="font-family: sans-serif; min-width: 255px;"><div style="border-bottom: 2px solid ' + markerBgColor + '; padding-bottom: 6px; margin-bottom: 8px;"><strong style="color: #351C15; font-size: 14px;">Tour: ' + tour + ' | Seq: #' + stop.seq + '</strong>' + bdrBadge + '</div><div style="font-size: 12px; line-height: 1.6;">' + recipientLine + '<b>Ort:</b> ' + (stop.postalCode || '') + ' ' + stop.city + '<br/><b>Straße:</b> ' + stop.street + ' ' + stop.house + '<br/><b>Kunde:</b> ' + commercialStr + '<br/><b>Service:</b> <span style="color: ' + markerBgColor + '; font-weight: bold;">' + (stop.service || 'STANDARD') + '</span></div><div style="background: #f8fafc; padding: 6px; border-radius: 4px; margin-top: 8px; font-size: 11px;"><div style="display: flex; justify-content: space-between;"><span>Soll-Zeit (SLA):</span> <b>' + (stop.commit || 'EOD') + '</b></div><div style="display: flex; justify-content: space-between;"><span>Ist-Zeit:</span> <b>' + actualTime + '</b></div></div>' +
+                        const zivRec = getHistoricalSTourInfo(stop.street, stop.postalCode, stop.lat, stop.lng);
+                        const quickToursSet = new Set();
+                        if (zivRec.primaryTour && zivRec.primaryTour !== tour) quickToursSet.add(zivRec.primaryTour);
+                        if (zivRec.altTour && zivRec.altTour !== tour) quickToursSet.add(zivRec.altTour);
+                        if (zivRec.springerTour && zivRec.springerTour !== tour) quickToursSet.add(zivRec.springerTour);
+                        tours.filter(t => t !== tour && t !== 'Prognosen (Vorladung)').slice(0, 6).forEach(t => quickToursSet.add(t));
+
+                        const tourButtonsHtml = Array.from(quickToursSet).map(t => {
+                            const isPrimary = t === zivRec.primaryTour;
+                            const isAlt = t === zivRec.altTour;
+                            const isSpr = t === zivRec.springerTour;
+                            const bg = isPrimary ? '#dcfce7' : (isSpr ? '#fef3c7' : '#f8fafc');
+                            const col = isPrimary ? '#166534' : (isSpr ? '#92400e' : '#1e293b');
+                            const bdr = isPrimary ? '#86efac' : (isSpr ? '#fcd34d' : '#cbd5e1');
+                            const prefix = isPrimary ? '🎯 ZIV ' : (isAlt ? '↪ Nachbar ' : (isSpr ? '⚡ Springer ' : '→ '));
+                            return `<button data-assign-tour="${t}" class="popup-tour-btn" style="padding:3px 7px;background:${bg};color:${col};border:1px solid ${bdr};border-radius:4px;font-size:10px;font-weight:bold;cursor:pointer;">${prefix}${t}</button>`;
+                        }).join('');
+
+                        popupContent.innerHTML = '<div style="font-family: sans-serif; min-width: 245px;"><div style="border-bottom: 2px solid ' + markerBgColor + '; padding-bottom: 6px; margin-bottom: 8px;"><strong style="color: #351C15; font-size: 14px;">Tour: ' + tour + ' | Seq: #' + stop.seq + '</strong>' + bdrBadge + '</div><div style="font-size: 12px; line-height: 1.6;">' + recipientLine + '<b>Ort:</b> ' + (stop.postalCode || '') + ' ' + stop.city + '<br/><b>Straße:</b> ' + stop.street + ' ' + stop.house + '<br/><b>Kunde:</b> ' + commercialStr + '<br/><b>Service:</b> <span style="color: ' + markerBgColor + '; font-weight: bold;">' + (stop.service || 'STANDARD') + '</span></div><div style="background: #f8fafc; padding: 6px; border-radius: 4px; margin-top: 8px; font-size: 11px;"><div style="display: flex; justify-content: space-between;"><span>Soll-Zeit (SLA):</span> <b>' + (stop.commit || 'EOD') + '</b></div><div style="display: flex; justify-content: space-between;"><span>Ist-Zeit:</span> <b>' + actualTime + '</b></div></div>' +
                         (tourButtonsHtml ? '<div style="margin-top:8px;padding:6px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;"><div style="font-size:9px;font-weight:900;color:#92400e;text-transform:uppercase;margin-bottom:4px;">⚡ Schnellzuweisung an Tour:</div><div style="display:flex;flex-wrap:wrap;gap:4px;">' + tourButtonsHtml + '</div></div>' : '') +
                         '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 8px;">' +
                         '<button id="btn-sv-' + tour + '-' + stop.seq + '" style="padding: 5px 6px; background-color: #0f172a; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 10px; font-weight: bold;">🛣️ Street View</button>' +
                         '<a href="' + googleNavStopUrl + '" target="_blank" style="padding: 5px 6px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 5px; text-align: center; font-size: 10px; font-weight: bold;">🧭 Google Nav</a>' +
-                        '<a href="' + googlePlacesSearchUrl + '" target="_blank" style="grid-column: span 2; padding: 4px 6px; background-color: #f1f5f9; color: #334155; text-decoration: none; border: 1px solid #cbd5e1; border-radius: 5px; text-align: center; font-size: 10px; font-weight: bold;">🏢 Google Places / Firma & Einfahrt prüfen</a>' +
-                        '</div>' +
-                        '<hr style="margin: 8px 0; border: none; border-top: 1px solid #e2e8f0;"/><button id="btn-geocode-' + tour + '-' + stop.seq + '" style="width: 100%; padding: 6px; background-color: #FFB500; color: #351C15; border: none; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: bold;">📍 Google ROOFTOP & GPS prüfen</button><div id="result-' + tour + '-' + stop.seq + '" style="margin-top: 5px; font-size: 11px; font-weight: bold; display: none;"></div></div>';
+                        '</div></div>';
                         const marker = window.L.marker([stop.lat, stop.lng], { icon }).addTo(layerGroup.current);
 
                         marker.on('click', (e) => {
@@ -2552,45 +2565,6 @@
                                         lat: stop.lat,
                                         lng: stop.lng
                                     });
-                                };
-                            }
-                            const btn = document.getElementById('btn-geocode-' + tour + '-' + stop.seq);
-                            const resultDiv = document.getElementById('result-' + tour + '-' + stop.seq);
-                            if (btn) {
-                                btn.onclick = async () => {
-                                    btn.innerHTML = 'Prüfe via Google Maps...'; btn.disabled = true;
-                                    try {
-                                        const addrQuery = `${stop.street || ''} ${stop.house || ''}, ${stop.postalCode || ''} ${stop.city || ''}, Germany`;
-                                        const geoRes = await geocodeAddressSmart(addrQuery, true, stop.recipient);
-                                        if (geoRes && geoRes.lat && geoRes.lng) {
-                                            const planLat = geoRes.lat, planLng = geoRes.lng;
-                                            const nk = normalizeAddressKey(stop.street, stop.postalCode, stop.city);
-                                            await GeoDB.setBulk({ [nk]: { lat: planLat, lng: planLng, locationType: geoRes.locationType } });
-                                            const R = 6371e3, phi1 = stop.lat * Math.PI / 180, phi2 = planLat * Math.PI / 180;
-                                            const dphi = (planLat - stop.lat) * Math.PI / 180, dlambda = (planLng - stop.lng) * Math.PI / 180;
-                                            const aa = Math.sin(dphi / 2) ** 2 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dlambda / 2) ** 2;
-                                            const distance = Math.round(R * 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa)));
-                                            if (stop.isForecast) {
-                                                // В режиме утреннего прогноза сразу переставляем маркер на точное здание ROOFTOP / Google Places!
-                                                marker.setLatLng([planLat, planLng]);
-                                                setData(prev => {
-                                                    const next = prev.map(item => (item._uid === stop._uid || (item.tour === tour && item.seq === stop.seq)) ? { ...item, lat: planLat, lng: planLng } : item);
-                                                    GeoDB.saveReport('current_ups_data', next, fileName, isForecastMode);
-                                                    return next;
-                                                });
-                                                btn.style.display = 'none'; resultDiv.style.display = 'block';
-                                                resultDiv.style.color = '#16a34a';
-                                                resultDiv.innerHTML = `✅ ${geoRes.locationType || 'ROOFTOP'} (${geoRes.provider}): Pin automatisch korrigiert (${distance} m)`;
-                                            } else {
-                                                const planIcon = window.L.divIcon({ className: 'custom-plan-icon', html: '<div style="background:#dc2626;color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);">G</div>', iconSize: [20, 20], iconAnchor: [10, 10] });
-                                                window.L.marker([planLat, planLng], { icon: planIcon }).addTo(layerGroup.current);
-                                                window.L.polyline([[stop.lat, stop.lng], [planLat, planLng]], { color: '#dc2626', dashArray: '5, 5', weight: 2 }).addTo(layerGroup.current);
-                                                btn.style.display = 'none'; resultDiv.style.display = 'block';
-                                                resultDiv.style.color = distance > 150 ? '#dc2626' : '#16a34a';
-                                                resultDiv.innerHTML = `${geoRes.locationType || 'OK'} (${geoRes.provider}): Abweichung ${distance} m`;
-                                            }
-                                        } else { btn.innerHTML = 'Adresse nicht gefunden'; }
-                                    } catch (error) { btn.innerHTML = 'Fehler'; btn.disabled = false; }
                                 };
                             }
                         });
