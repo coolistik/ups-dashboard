@@ -2872,111 +2872,102 @@
                         </div>
                     )}
 
-                    {/* 1. Enterprise Command Header */}
-                    <div className="shrink-0 bg-[#1e1410] text-white px-4 py-2.5 rounded-xl shadow-md border-b-2 border-[#FFB500] flex flex-col xl:flex-row justify-between items-start xl:items-center gap-3 mb-2.5">
-                        <div className="flex items-center gap-3 flex-wrap">
-                            <div className="w-9 h-9 rounded-lg bg-[#FFB500] text-[#1e1410] flex items-center justify-center font-black text-base shadow">
+                    {/* 1. Compact Single-Line Command Header */}
+                    <div className="shrink-0 bg-[#1e1410] text-white px-3.5 py-2 rounded-xl shadow-md border-b-2 border-[#FFB500] flex items-center justify-between gap-3 mb-2 overflow-x-auto custom-scrollbar">
+                        <div className="flex items-center gap-2.5 shrink-0">
+                            <div className="w-8 h-8 rounded-lg bg-[#FFB500] text-[#1e1410] flex items-center justify-center font-black text-sm shadow shrink-0">
                                 UPS
                             </div>
-                            <div>
-                                <div className="flex items-center gap-2.5 flex-wrap">
-                                    <h1 className="text-base lg:text-lg font-black tracking-tight text-white">SVD DISPOSITION WORKSTATION</h1>
-                                    <span
-                                        onClick={handleExportGeoCache}
-                                        title="Klicken, um den aktuellen Geo-Cache als geo_cache.json herunterzuladen"
-                                        className="cursor-pointer text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-colors"
-                                    >
-                                        🗄️ {dbEngine}: {Object.keys(plzCoordsCache).length} Адр.
-                                    </span>
-                                    <button
-                                        onClick={() => setShowApiModal(true)}
-                                        title="Google Maps Platform API-Key & Einstellungen verwalten"
-                                        className={"cursor-pointer text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-colors flex items-center gap-1 " + (googleApiKey ? "bg-blue-500/20 text-blue-300 border-blue-400/40 hover:bg-blue-500/30" : "bg-amber-500/20 text-amber-300 border-amber-400/40")}
-                                    >
-                                        🗺️ Google API {googleApiKey ? 'Aktiv' : 'Key fehlt'} ⚙️
-                                    </button>
-                                </div>
-                                <p className="text-[11px] text-amber-200/70">Morgen-Express-Disposition • Smart Clustering • Live SLA-Prognose • Google Maps</p>
-                            </div>
+                            <span className="text-sm lg:text-base font-black tracking-tight text-white whitespace-nowrap">SVD DISPO</span>
+                            <span
+                                onClick={handleExportGeoCache}
+                                title="Klicken, um den aktuellen Geo-Cache als geo_cache.json herunterzuladen"
+                                className="cursor-pointer text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-colors whitespace-nowrap"
+                            >
+                                🗄️ {Object.keys(plzCoordsCache).length} Адр.
+                            </span>
+                            <button
+                                onClick={() => setShowApiModal(true)}
+                                title="Google Maps Platform API-Key & Einstellungen verwalten"
+                                className={"cursor-pointer text-[11px] font-bold px-2 py-0.5 rounded-full border transition-colors flex items-center gap-1 whitespace-nowrap " + (googleApiKey ? "bg-blue-500/20 text-blue-300 border-blue-400/40 hover:bg-blue-500/30" : "bg-amber-500/20 text-amber-300 border-amber-400/40")}
+                            >
+                                🗺️ Google {googleApiKey ? '✓' : '⚙️'}
+                            </button>
                         </div>
 
-                        {/* Live Morning KPI Ribbon */}
+                        {/* Single-Row Non-Wrapping KPI Ribbon */}
                         {data.length > 0 && (
-                            <div className="flex items-center gap-1.5 flex-wrap bg-white/5 px-3 py-1.5 rounded-lg border border-white/10">
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
-                                    <div className="text-[9px] uppercase text-slate-400 font-bold">Gesamt</div>
-                                    <div className="text-sm font-black text-white">{data.length}</div>
+                            <div className="flex items-center bg-white/5 px-2 py-1 rounded-lg border border-white/10 shrink-0">
+                                <div className="px-2.5 text-center border-r border-white/10 whitespace-nowrap">
+                                    <span className="text-[10px] uppercase text-slate-400 font-bold mr-1">Gesamt:</span>
+                                    <span className="text-xs font-black text-white">{data.length}</span>
                                 </div>
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10 cursor-pointer" onClick={() => setShowCriticalPanel(true)} title="Kritische 09:00 Uhr Express-Stopps">
-                                    <div className="text-[9px] uppercase text-red-400 font-bold">09:00 AM</div>
-                                    <div className="text-sm font-black text-red-400">{total0900}</div>
+                                <div
+                                    className="px-2.5 text-center border-r border-white/10 cursor-pointer hover:bg-white/10 rounded transition-colors whitespace-nowrap"
+                                    onClick={() => setShowCriticalPanel(!showCriticalPanel)}
+                                    title="Klicken, um die 09:00 Uhr Express-Stopps ein-/auszublenden"
+                                >
+                                    <span className="text-[10px] uppercase text-red-400 font-bold mr-1">09:00:</span>
+                                    <span className="text-xs font-black text-red-400">{total0900} ▾</span>
                                 </div>
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
-                                    <div className="text-[9px] uppercase text-purple-300 font-bold">10:30 Expr</div>
-                                    <div className="text-sm font-black text-purple-300">{total1030}</div>
+                                <div className="px-2.5 text-center border-r border-white/10 whitespace-nowrap">
+                                    <span className="text-[10px] uppercase text-purple-300 font-bold mr-1">10:30:</span>
+                                    <span className="text-xs font-black text-purple-300">{total1030}</span>
                                 </div>
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
-                                    <div className="text-[9px] uppercase text-orange-300 font-bold">12:00 Expr</div>
-                                    <div className="text-sm font-black text-orange-300">{total1200}</div>
+                                <div className="px-2.5 text-center border-r border-white/10 whitespace-nowrap">
+                                    <span className="text-[10px] uppercase text-orange-300 font-bold mr-1">12:00:</span>
+                                    <span className="text-xs font-black text-orange-300">{total1200}</span>
                                 </div>
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
-                                    <div className="text-[9px] uppercase text-sky-300 font-bold">S-Touren</div>
-                                    <div className="text-sm font-black text-sky-300">{concreteToursCount}</div>
+                                <div className="px-2.5 text-center border-r border-white/10 whitespace-nowrap">
+                                    <span className="text-[10px] uppercase text-sky-300 font-bold mr-1">Touren:</span>
+                                    <span className="text-xs font-black text-sky-300">{concreteToursCount}</span>
                                 </div>
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10 cursor-pointer" onClick={() => setShowBeltSheetModal(true)} title="Umverfügungen für das Sortierband um 06:45 Uhr anzeigen">
-                                    <div className="text-[9px] uppercase text-amber-300 font-bold">Band-Umverf.</div>
-                                    <div className="text-sm font-black text-[#FFB500]">{beltRedirections.length}</div>
-                                </div>
-                                <div className="px-2 py-0.5 text-center cursor-pointer" onClick={() => setShowCriticalPanel(true)}>
-                                    <div className="text-[9px] uppercase text-slate-400 font-bold">SLA Risiko</div>
-                                    <div className={"text-sm font-black " + (totalSlaRisks > 0 ? "text-red-400 animate-pulse" : "text-emerald-400")}>{totalSlaRisks === 0 ? '✓ 0' : `⚠️ ${totalSlaRisks}`}</div>
+                                <div
+                                    className="px-2.5 text-center cursor-pointer hover:bg-white/10 rounded transition-colors whitespace-nowrap"
+                                    onClick={() => setShowCriticalPanel(!showCriticalPanel)}
+                                >
+                                    <span className="text-[10px] uppercase text-slate-400 font-bold mr-1">SLA:</span>
+                                    <span className={"text-xs font-black " + (totalSlaRisks > 0 ? "text-red-400 animate-pulse" : "text-emerald-400")}>
+                                        {totalSlaRisks === 0 ? '✓ OK' : `⚠️ ${totalSlaRisks}`}
+                                    </span>
                                 </div>
                             </div>
                         )}
 
-                        {/* Actions & File Upload */}
-                        <div className="flex items-center gap-2 flex-wrap w-full xl:w-auto justify-end">
-                            {data.length > 0 && (
-                                <button
-                                    onClick={() => setShowBeltSheetModal(true)}
-                                    className="bg-gradient-to-r from-amber-400 to-[#FFB500] hover:from-yellow-400 hover:to-yellow-500 text-[#1e1410] font-black text-xs px-3.5 py-2 rounded-lg shadow-sm flex items-center gap-1.5 transition-transform active:scale-95"
-                                    title="Öffnet die 06:45 Uhr Band-Anweisung (alle Umverfügungen Aus Stamm-Tour ➔ In Ziel-Tour), 09:00 Checkliste & Springer-Zettel zum Drucken oder für WhatsApp"
-                                >
-                                    📋 06:45 Band-Anweisung ({beltRedirections.length})
-                                </button>
-                            )}
+                        {/* Right Header Actions: OSRM + File Upload */}
+                        <div className="flex items-center gap-2 shrink-0">
                             {data.length > 0 && totalSlaRisks > 0 && (
                                 <button
                                     onClick={handleResolveSlaConflictsWithSpringer}
-                                    className="bg-red-600 hover:bg-red-500 text-white font-black text-xs px-3 py-2 rounded-lg shadow-sm flex items-center gap-1.5 animate-pulse"
-                                    title="Verteilt kritische 09:00 / 10:30 Express-Stopps mit drohender Verspätung automatisch auf Nachbar-Touren oder Express-Springer (S1H–S4H)"
+                                    className="bg-red-600 hover:bg-red-500 text-white font-black text-xs px-2.5 py-1.5 rounded-lg shadow-sm flex items-center gap-1 animate-pulse whitespace-nowrap"
+                                    title="Verteilt kritische Express-Stopps mit drohender Verspätung automatisch auf Nachbar-Touren oder Springer (S1H–S4H)"
                                 >
-                                    🚑 {totalSlaRisks} SLA-Konflikte lösen
+                                    🚑 {totalSlaRisks} Konflikte lösen
                                 </button>
                             )}
                             {data.length > 0 && concreteToursCount > 0 && (
                                 <button
                                     onClick={() => fetchOsrmTourRoads(true)}
                                     disabled={isFetchingOsrm}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isFetchingOsrm ? 'bg-white/10 text-gray-400' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}
-                                    title="Berechnet für alle Touren die echten Straßenverläufe, Autobahn-Routen und Fahrzeiten über OSRM"
+                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${isFetchingOsrm ? 'bg-white/10 text-gray-400' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}
+                                    title="Berechnet für alle Touren die echten Straßenverläufe über OSRM"
                                 >
-                                    {isFetchingOsrm ? '🛣️ Lade Straßen...' : '🛣️ Straßen-Routen (OSRM)'}
+                                    {isFetchingOsrm ? '🛣️ Lädt...' : '🛣️ Straßen-Routen'}
                                 </button>
                             )}
-                            <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg border border-white/15">
-                                <label className="cursor-pointer text-xs font-black bg-[#FFB500] text-[#1e1410] hover:bg-yellow-400 py-1 px-3 rounded-md transition-colors whitespace-nowrap">
+                            <div className="flex items-center gap-1.5 bg-white/10 px-2.5 py-1 rounded-lg border border-white/15 shrink-0">
+                                <label className="cursor-pointer text-xs font-black bg-[#FFB500] text-[#1e1410] hover:bg-yellow-400 py-1 px-2.5 rounded transition-colors whitespace-nowrap">
                                     📂 Datei laden
                                     <input type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls" onChange={handleFileUpload} className="hidden" />
                                 </label>
-                                <span className="text-xs text-slate-300 truncate max-w-[130px] font-medium" title={fileName}>{fileName || (data.length > 0 ? 'Gespeichert' : 'Keine Datei')}</span>
+                                <span className="text-[11px] text-slate-300 truncate max-w-[110px] font-medium" title={fileName}>{fileName || (data.length > 0 ? 'Gespeichert' : 'Keine Datei')}</span>
                                 {data.length > 0 && (
                                     <button
                                         onClick={clearData}
-                                        className="text-[11px] font-bold text-red-300 hover:text-red-400 px-1.5 py-0.5 rounded bg-red-500/10 hover:bg-red-500/20 transition-colors"
+                                        className="text-[11px] font-bold text-red-300 hover:text-red-400 px-1.5 py-0.5 rounded bg-red-500/10 hover:bg-red-500/20 transition-colors whitespace-nowrap"
                                         title="Alle Daten zurücksetzen"
                                     >
-                                        ✕ Reset
+                                        ✕
                                     </button>
                                 )}
                             </div>
@@ -2993,23 +2984,18 @@
                         </div>
                     )}
 
-                    {/* 2. Navigation Bar */}
+                    {/* 2. Clean Navigation & Morning Action Bar */}
                     {data.length > 0 && (
                         <div className="shrink-0 flex items-center justify-between bg-white px-3 py-1.5 rounded-xl shadow-sm border border-gray-200 overflow-x-auto custom-scrollbar mb-2 gap-2">
-                            <div className="flex items-center gap-1">
-                                <button onClick={() => setActiveTab('map')} className={"py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'map' ? 'bg-[#351C15] text-[#FFB500] shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                    🗺️ Karte &amp; Live-Zuweisung
+                            <div className="flex items-center gap-1 shrink-0">
+                                <button onClick={() => setActiveTab('map')} className={"py-1.5 px-3 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'map' ? 'bg-[#351C15] text-[#FFB500] shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                    🗺️ Karte
                                 </button>
-                                <button onClick={() => setActiveTab('disposition')} className={"py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'disposition' ? 'bg-[#FFB500] text-[#1e1410] shadow-sm' : 'text-gray-700 bg-amber-50/70 hover:bg-amber-100/80 border border-amber-200')}>
-                                    ⚡ Touren-Board (S01–S42)
-                                    {totalSlaRisks > 0 && <span className="bg-red-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">⚠️ {totalSlaRisks}</span>}
-                                </button>
-                                <button onClick={() => setShowBeltSheetModal(true)} className="py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 bg-indigo-50 text-indigo-900 hover:bg-indigo-100 border border-indigo-200">
-                                    📋 06:45 Band-Anweisung &amp; Springer
-                                    {beltRedirections.length > 0 && <span className="bg-indigo-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">{beltRedirections.length}</span>}
+                                <button onClick={() => setActiveTab('disposition')} className={"py-1.5 px-3 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'disposition' ? 'bg-[#FFB500] text-[#1e1410] shadow-sm' : 'text-gray-700 hover:bg-amber-50')}>
+                                    ⚡ Touren-Board ({concreteToursCount})
                                 </button>
                                 <button onClick={() => setActiveTab('table')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'table' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                    📋 Sendungs-Tabelle <span className={"py-0.2 px-1.5 rounded-full text-[10px] font-black " + (activeTab === 'table' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800')}>{data.length}</span>
+                                    📋 Tabelle ({data.length})
                                 </button>
                                 <button onClick={() => setActiveTab('plz')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'plz' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
                                     📮 PLZ-Matrix
@@ -3017,165 +3003,141 @@
 
                                 {(!isForecastMode || showEveningTabs) && (
                                     <>
-                                        <button onClick={() => setActiveTab('google_hub')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 " + (activeTab === 'google_hub' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                        <button onClick={() => setActiveTab('google_hub')} className={"py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'google_hub' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
                                             🧭 SLA-Routen
                                         </button>
-                                        <button onClick={() => setActiveTab('idles')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 " + (activeTab === 'idles' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                            ⏱ Leerzeiten {allIdlesSummary.length > 0 && <span className="bg-red-100 text-red-700 px-1.5 rounded-full text-[10px] font-black">{allIdlesSummary.length}</span>}
+                                        <button onClick={() => setActiveTab('idles')} className={"py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'idles' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            ⏱ Leerzeiten
                                         </button>
-                                        <button onClick={() => setActiveTab('sla')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'sla' ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                            ⚠️ SLA &amp; Pickups
+                                        <button onClick={() => setActiveTab('sla')} className={"py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'sla' ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            ⚠️ Pickups
                                         </button>
-                                        <button onClick={() => setActiveTab('performance')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'performance' ? 'bg-slate-800 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                        <button onClick={() => setActiveTab('performance')} className={"py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'performance' ? 'bg-slate-800 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
                                             📊 KPIs
                                         </button>
-                                        <button onClick={() => setActiveTab('gps')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'gps' ? 'bg-teal-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                            📍 GPS-Kontrolle
+                                        <button onClick={() => setActiveTab('gps')} className={"py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'gps' ? 'bg-teal-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            📍 GPS
                                         </button>
                                     </>
                                 )}
                                 {isForecastMode && (
                                     <button
                                         onClick={() => setShowEveningTabs(!showEveningTabs)}
-                                        className="py-1 px-2.5 rounded-lg text-[11px] font-bold text-gray-500 hover:text-gray-800 hover:bg-gray-100 border border-dashed border-gray-300 whitespace-nowrap ml-1"
-                                        title="Abend-Auswertungen (Leerzeiten, GPS-Kontrolle, Pickups) ein-/ausblenden"
+                                        className="py-1 px-2 rounded-lg text-[11px] font-semibold text-gray-400 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap"
+                                        title="Abend-Auswertungen ein-/ausblenden"
                                     >
-                                        {showEveningTabs ? '‹ Abend-Tabs ausblenden' : '🌙 Abend-Analyse (+5)'}
+                                        {showEveningTabs ? '‹ Weniger' : '🌙 Abend (+5)'}
                                     </button>
                                 )}
                             </div>
 
-                            {/* Quick Global Departure Time & Export */}
-                            <div className="flex items-center gap-2 shrink-0 border-l pl-3 border-gray-200">
-                                <span className="text-[11px] font-bold text-gray-500">Abfahrt Depot:</span>
-                                <input
-                                    type="time"
-                                    value={routeStartTime}
-                                    onChange={(e) => setRouteStartTime(e.target.value)}
-                                    className="border border-gray-300 rounded px-2 py-0.5 text-xs font-black bg-gray-50 text-gray-800"
-                                />
+                            {/* Right Toolbar: 09:00 Focus Toggle + 06:45 Belt Sheet + Departure Time + CSV */}
+                            <div className="flex items-center gap-2 shrink-0">
+                                {isForecastMode && criticalMorningStops.length > 0 && (
+                                    <button
+                                        onClick={() => setShowCriticalPanel(!showCriticalPanel)}
+                                        className={"py-1 px-2.5 rounded-lg text-xs font-black border transition-all whitespace-nowrap flex items-center gap-1.5 " + (showCriticalPanel ? "bg-red-600 text-white border-red-700 shadow-sm" : "bg-red-50 text-red-800 border-red-200 hover:bg-red-100")}
+                                        title="Kritische 09:00 Express-Stopps & SLA-Risiken ein-/ausblenden"
+                                    >
+                                        🔴 09:00 Fokus ({criticalMorningStops.length}) {showCriticalPanel ? '▴' : '▾'}
+                                    </button>
+                                )}
                                 <button
-                                    onClick={handleExportAllDispositionCSV}
-                                    className="bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold px-2.5 py-1 rounded-md shadow-sm"
-                                    title="Kompletten Tourenplan inkl. Umverfügungen als CSV für Excel herunterladen"
+                                    onClick={() => setShowBeltSheetModal(true)}
+                                    className="py-1 px-3 rounded-lg text-xs font-black bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm whitespace-nowrap flex items-center gap-1.5"
+                                    title="06:45 Uhr Band-Anweisung (Umverfügungen) & Springer-Zettel öffnen"
                                 >
-                                    📥 Tourenplan CSV
+                                    📋 06:45 Band-Zettel ({beltRedirections.length})
                                 </button>
+                                <div className="flex items-center gap-1.5 border-l pl-2.5 border-gray-200">
+                                    <span className="text-[11px] font-bold text-gray-500">Abfahrt:</span>
+                                    <input
+                                        type="time"
+                                        value={routeStartTime}
+                                        onChange={(e) => setRouteStartTime(e.target.value)}
+                                        className="border border-gray-300 rounded px-1.5 py-0.5 text-xs font-black bg-gray-50 text-gray-800"
+                                    />
+                                    <button
+                                        onClick={handleExportAllDispositionCSV}
+                                        className="bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm whitespace-nowrap"
+                                        title="Kompletten Tourenplan als CSV herunterladen"
+                                    >
+                                        📥 CSV
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     )}
 
-                    {/* 2b. 06:30 EXCEPTION FOCUS PANEL: Kritische 09:00 Express & SLA-Konflikte */}
-                    {data.length > 0 && isForecastMode && criticalMorningStops.length > 0 && (activeTab === 'map' || activeTab === 'disposition') && (
-                        <div className="shrink-0 bg-gradient-to-r from-red-950 via-[#2a1215] to-slate-900 text-white px-3.5 py-2 rounded-xl shadow-md border border-red-500/40 mb-2">
-                            <div className="flex items-center justify-between gap-2 flex-wrap">
-                                <div className="flex items-center gap-2">
-                                    <span className="bg-red-600 text-white text-[10px] font-black px-2 py-0.5 rounded uppercase tracking-wider">
-                                        🚨 06:30 Fokus-Cockpit
-                                    </span>
-                                    <span className="text-xs font-black text-amber-300">
-                                        {criticalMorningStops.filter(s => s.is0900).length}× 09:00 Uhr Express
-                                    </span>
+                    {/* 2b. Collapsible 09:00 Focus Drawer (Only shown when toggled open) */}
+                    {data.length > 0 && isForecastMode && showCriticalPanel && criticalMorningStops.length > 0 && (
+                        <div className="shrink-0 bg-slate-900 text-white px-3 py-2 rounded-xl shadow-md border border-red-500/40 mb-2">
+                            <div className="flex items-center justify-between gap-2 mb-1.5 pb-1 border-b border-white/10">
+                                <div className="flex items-center gap-2 text-xs">
+                                    <span className="font-black text-red-400">🔴 09:00 UHR EXPRESS &amp; SLA-FOKUS ({criticalMorningStops.length} Stopps)</span>
                                     <span className="text-slate-400">•</span>
-                                    <span className={"text-xs font-black " + (totalSlaRisks > 0 ? "text-red-400" : "text-emerald-400")}>
-                                        {totalSlaRisks > 0 ? `⚠️ ${totalSlaRisks} drohende SLA-Verspätungen` : '✓ Alle ETAs im Zeitfenster'}
+                                    <span className={totalSlaRisks > 0 ? "text-red-400 font-bold" : "text-emerald-400 font-bold"}>
+                                        {totalSlaRisks > 0 ? `⚠️ ${totalSlaRisks} Konflikte` : '✓ Alle ETAs im grünen Bereich'}
                                     </span>
-                                    {beltRedirections.length > 0 && (
-                                        <>
-                                            <span className="text-slate-400">•</span>
-                                            <span
-                                                onClick={() => setShowBeltSheetModal(true)}
-                                                className="text-xs font-bold text-indigo-300 underline cursor-pointer hover:text-white"
-                                            >
-                                                🔀 {beltRedirections.length} Band-Umverfügungen (für 06:45 Sortierband)
-                                            </span>
-                                        </>
-                                    )}
                                 </div>
-                                <div className="flex items-center gap-2">
-                                    {totalSlaRisks > 0 && (
-                                        <button
-                                            onClick={handleResolveSlaConflictsWithSpringer}
-                                            className="bg-red-600 hover:bg-red-500 text-white text-[11px] font-black px-2.5 py-1 rounded-lg shadow"
-                                        >
-                                            🚑 Alle {totalSlaRisks} Konflikte automatisch lösen
-                                        </button>
-                                    )}
-                                    <button
-                                        onClick={() => setShowBeltSheetModal(true)}
-                                        className="bg-[#FFB500] hover:bg-yellow-400 text-[#1e1410] text-[11px] font-black px-2.5 py-1 rounded-lg shadow"
-                                    >
-                                        📋 06:45 Band-Zettel öffnen
-                                    </button>
-                                    <button
-                                        onClick={() => setShowCriticalPanel(!showCriticalPanel)}
-                                        className="text-[11px] font-bold text-slate-300 hover:text-white bg-white/10 px-2 py-0.5 rounded"
-                                    >
-                                        {showCriticalPanel ? '▲ Einklappen' : `▼ Zeige ${criticalMorningStops.length} Fokus-Stopps`}
-                                    </button>
-                                </div>
+                                <button
+                                    onClick={() => setShowCriticalPanel(false)}
+                                    className="text-[11px] font-bold text-slate-300 hover:text-white px-2 py-0.5 rounded bg-white/10"
+                                >
+                                    ✕ Schließen
+                                </button>
                             </div>
-
-                            {showCriticalPanel && (
-                                <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2 max-h-[135px] overflow-y-auto custom-scrollbar pr-1 pt-1 border-t border-white/10">
-                                    {criticalMorningStops.map((st) => (
-                                        <div
-                                            key={`${st.currentTour}_${st.key}`}
-                                            className={"p-2 rounded-lg border flex items-center justify-between gap-2 text-[11px] " + (st.isConflict ? "bg-red-950/90 border-red-500" : "bg-white/10 border-white/15")}
-                                        >
-                                            <div className="min-w-0 flex-1">
-                                                <div className="flex items-center gap-1.5 flex-wrap">
-                                                    <span className={"px-1.5 py-0.2 rounded text-[10px] font-black " + (st.commit === '09:00' ? "bg-red-600 text-white" : st.commit === '10:30' ? "bg-purple-600 text-white" : "bg-orange-500 text-white")}>
-                                                        {st.commit}
-                                                    </span>
-                                                    <span className="font-black text-amber-300">{st.currentTour}</span>
-                                                    {st.histPrimaryTour && st.histPrimaryTour !== st.currentTour && (
-                                                        <span className="text-[9px] bg-indigo-600/80 text-white px-1 rounded font-bold">aus {st.histPrimaryTour}</span>
-                                                    )}
-                                                    <span className={"font-black text-[10px] " + (st.isConflict ? "text-red-300 underline" : "text-emerald-300")}>
-                                                        ETA {st.etaStr} ({st.bufferMins >= 0 ? `+${st.bufferMins}m` : `${st.bufferMins}m`})
-                                                    </span>
-                                                </div>
-                                                <div className="font-bold text-white truncate mt-0.5" title={st.recipient}>{st.recipient || st.street}</div>
-                                                <div className="text-[10px] text-slate-300 truncate">{st.postalCode} {st.city}, {st.street}</div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2 max-h-[120px] overflow-y-auto custom-scrollbar pr-1">
+                                {criticalMorningStops.map((st) => (
+                                    <div
+                                        key={`${st.currentTour}_${st.key}`}
+                                        className={"p-2 rounded-lg border flex items-center justify-between gap-2 text-[11px] " + (st.isConflict ? "bg-red-950/90 border-red-500" : "bg-white/5 border-white/15")}
+                                    >
+                                        <div className="min-w-0 flex-1">
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="px-1.5 py-0.2 rounded text-[10px] font-black bg-red-600 text-white shrink-0">{st.commit}</span>
+                                                <span className="font-black text-amber-300 shrink-0">{st.currentTour}</span>
+                                                <span className={"font-black text-[10px] truncate " + (st.isConflict ? "text-red-300 underline" : "text-emerald-300")}>
+                                                    ETA {st.etaStr} ({st.bufferMins >= 0 ? `+${st.bufferMins}m` : `${st.bufferMins}m`})
+                                                </span>
                                             </div>
-                                            <div className="flex flex-col gap-1 shrink-0 items-end">
-                                                <div className="flex items-center gap-1">
-                                                    <button
-                                                        onClick={() => {
-                                                            setActiveTab('map');
-                                                            if (!selectedTours.includes(st.currentTour)) setSelectedTours(prev => [...prev, st.currentTour]);
-                                                            setHighlightIdle({ tour: st.currentTour, fromSeq: st.seq, toSeq: st.seq });
-                                                        }}
-                                                        className="bg-white/15 hover:bg-white/25 text-white px-1.5 py-0.5 rounded text-[9px] font-bold"
-                                                        title="Auf Karte zentrieren"
-                                                    >
-                                                        📍 Karte
-                                                    </button>
-                                                    {st.histAltTour && st.histAltTour !== st.currentTour && (
-                                                        <button
-                                                            onClick={() => handleAssignStopOrPlz(st.rows[0], st.histAltTour, 'stop')}
-                                                            className="bg-amber-400 hover:bg-amber-300 text-[#1e1410] px-1.5 py-0.5 rounded text-[9px] font-black"
-                                                            title={`An Nachbar-Tour ${st.histAltTour} übergeben`}
-                                                        >
-                                                            ↪ {st.histAltTour}
-                                                        </button>
-                                                    )}
-                                                    {st.springerTour && st.springerTour !== st.currentTour && (
-                                                        <button
-                                                            onClick={() => handleAssignStopOrPlz(st.rows[0], st.springerTour, 'stop')}
-                                                            className="bg-indigo-500 hover:bg-indigo-400 text-white px-1.5 py-0.5 rounded text-[9px] font-black"
-                                                            title={`An Express-Springer ${st.springerTour} übergeben`}
-                                                        >
-                                                            ⚡ {st.springerTour}
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </div>
+                                            <div className="font-bold text-white truncate mt-0.5" title={st.recipient}>{st.recipient || st.street}</div>
+                                            <div className="text-[10px] text-slate-300 truncate">{st.postalCode} {st.city}, {st.street}</div>
                                         </div>
-                                    ))}
-                                </div>
-                            )}
+                                        <div className="flex items-center gap-1 shrink-0">
+                                            <button
+                                                onClick={() => {
+                                                    setActiveTab('map');
+                                                    if (!selectedTours.includes(st.currentTour)) setSelectedTours(prev => [...prev, st.currentTour]);
+                                                    setHighlightIdle({ tour: st.currentTour, fromSeq: st.seq, toSeq: st.seq });
+                                                }}
+                                                className="bg-white/15 hover:bg-white/25 text-white px-1.5 py-1 rounded text-[10px] font-bold"
+                                                title="Auf Karte zeigen"
+                                            >
+                                                📍
+                                            </button>
+                                            {st.histAltTour && st.histAltTour !== st.currentTour && (
+                                                <button
+                                                    onClick={() => handleAssignStopOrPlz(st.rows[0], st.histAltTour, 'stop')}
+                                                    className="bg-amber-400 hover:bg-amber-300 text-[#1e1410] px-1.5 py-1 rounded text-[10px] font-black"
+                                                    title={`An Nachbar-Tour ${st.histAltTour} übergeben`}
+                                                >
+                                                    ↪ {st.histAltTour}
+                                                </button>
+                                            )}
+                                            {st.springerTour && st.springerTour !== st.currentTour && (
+                                                <button
+                                                    onClick={() => handleAssignStopOrPlz(st.rows[0], st.springerTour, 'stop')}
+                                                    className="bg-indigo-500 hover:bg-indigo-400 text-white px-1.5 py-1 rounded text-[10px] font-black"
+                                                    title={`An Express-Springer ${st.springerTour} übergeben`}
+                                                >
+                                                    ⚡ {st.springerTour}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     )}
 
@@ -3184,118 +3146,92 @@
                         {data.length > 0 ? (
                             <>
                                 {/* Tab: MAP + LIVE DISPOSITION SIDEBAR */}
-                                <div className={`h-full w-full ${activeTab === 'map' ? 'flex flex-col lg:flex-row gap-3' : 'hidden'}`}>
-                                    {/* Left Disposition & Tour Control Dock */}
-                                    <div className={`flex flex-col gap-2.5 shrink-0 w-full lg:w-[370px] h-full ${isMapExpanded ? "hidden" : "flex"}`}>
-                                        {/* Schnell-Disposition Box */}
-                                        <div className="bg-white p-3 rounded-xl shadow-sm border-2 border-amber-300 shrink-0 space-y-2">
-                                            <div className="flex items-center justify-between border-b border-amber-100 pb-1.5">
-                                                <div className="flex items-center gap-1.5">
-                                                    <span className="bg-[#FFB500] text-[#1e1410] font-black text-[11px] px-2 py-0.5 rounded">06:30 DISPO</span>
-                                                    <span className="text-xs font-black text-[#351C15]">S01–S42 &amp; Springer</span>
+                                <div className={`h-full w-full ${activeTab === 'map' ? 'flex flex-col lg:flex-row gap-2.5' : 'hidden'}`}>
+                                    {/* Left Disposition & Tour Control Dock (Clean, Non-Wrapping, Full Height for Tours) */}
+                                    <div className={`flex flex-col gap-2 shrink-0 w-full lg:w-[360px] h-full ${isMapExpanded ? "hidden" : "flex"}`}>
+                                        {/* Compact Map Assignment Bar */}
+                                        <div className="bg-white p-2.5 rounded-xl shadow-sm border border-gray-200 shrink-0 space-y-2">
+                                            <div className="flex items-center justify-between gap-1.5">
+                                                <span className="text-[11px] font-black text-gray-700 whitespace-nowrap">🎯 Karten-Klick:</span>
+                                                <div className="flex rounded-lg border border-gray-300 overflow-hidden text-[10px] font-bold shrink-0">
+                                                    <button
+                                                        onClick={() => setClickAssignScope('off')}
+                                                        className={"px-2 py-1 whitespace-nowrap " + (clickAssignScope === 'off' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50')}
+                                                    >
+                                                        Info
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setClickAssignScope('stop')}
+                                                        className={"px-2 py-1 border-l border-gray-300 whitespace-nowrap " + (clickAssignScope === 'stop' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50')}
+                                                    >
+                                                        +Stopp
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setClickAssignScope('plz')}
+                                                        className={"px-2 py-1 border-l border-gray-300 whitespace-nowrap " + (clickAssignScope === 'plz' ? 'bg-purple-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50')}
+                                                    >
+                                                        +PLZ
+                                                    </button>
                                                 </div>
-                                                <button
-                                                    onClick={() => setShowBeltSheetModal(true)}
-                                                    className="text-[11px] font-black text-indigo-800 bg-indigo-100 hover:bg-indigo-200 px-2 py-0.5 rounded-full"
+                                                <select
+                                                    value={activeAssignTour}
+                                                    onChange={(e) => setActiveAssignTour(e.target.value)}
+                                                    className="w-24 border border-gray-300 rounded-lg px-1.5 py-1 text-[11px] font-black bg-blue-50 text-blue-900 shrink-0"
+                                                    title="Ziel-Tour für Klick-Zuweisung auf der Karte"
                                                 >
-                                                    🔀 {beltRedirections.length} Band-Umverf.
-                                                </button>
+                                                    <option value="">Ziel...</option>
+                                                    {['S1H', 'S2H', 'S3H', 'S4H', ...tours.filter(t => t !== 'Prognosen (Vorladung)' && !['S1H', 'S2H', 'S3H', 'S4H'].includes(t))].map(t => (
+                                                        <option key={t} value={t}>{t}</option>
+                                                    ))}
+                                                </select>
                                             </div>
 
-                                            {/* Clean S-Tour & Conflict Actions (without K-Means/Corridor clutter) */}
-                                            <div className="flex gap-1.5">
+                                            <div className="flex items-center gap-1.5">
+                                                <input
+                                                    type="text"
+                                                    value={newTourInput}
+                                                    onChange={(e) => setNewTourInput(e.target.value)}
+                                                    onKeyDown={(e) => e.key === 'Enter' && handleCreateNewTour()}
+                                                    placeholder="+ Neue Tour (z.B. S1H)..."
+                                                    className="flex-1 min-w-0 border border-gray-300 rounded-lg px-2 py-1 text-[11px] bg-gray-50 focus:bg-white outline-none"
+                                                />
+                                                <button
+                                                    onClick={() => handleCreateNewTour()}
+                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[11px] px-2.5 py-1 rounded-lg shadow-sm whitespace-nowrap shrink-0"
+                                                >
+                                                    + Tour
+                                                </button>
                                                 <button
                                                     onClick={() => handleRunAutoDisposition('stours')}
-                                                    className="flex-1 bg-[#351C15] hover:bg-black text-[#FFB500] text-[11px] font-black px-2.5 py-1.5 rounded-lg shadow-sm flex items-center justify-center gap-1"
-                                                    title="Setzt alle Sendungen zurück auf ihre historische Stamm-Tour S01–S42 (Oktober-ZIV)"
+                                                    className="bg-gray-100 hover:bg-amber-100 text-gray-700 border border-gray-300 font-bold text-[11px] px-2 py-1 rounded-lg whitespace-nowrap shrink-0"
+                                                    title="Alle Sendungen zurück auf ihre Stamm-Touren S01–S42 setzen"
                                                 >
-                                                    🏭 Stamm-Touren (S01–S42)
+                                                    ↺ S01–S42
                                                 </button>
-                                                {totalSlaRisks > 0 && (
-                                                    <button
-                                                        onClick={handleResolveSlaConflictsWithSpringer}
-                                                        className="flex-1 bg-red-600 hover:bg-red-700 text-white text-[11px] font-black px-2 py-1.5 rounded-lg shadow-sm flex items-center justify-center gap-1"
-                                                    >
-                                                        🚑 {totalSlaRisks} Konflikte lösen
-                                                    </button>
-                                                )}
-                                            </div>
-
-                                            {/* Click-on-Map Assignment Selector */}
-                                            <div className="space-y-1.5 pt-1 border-t border-slate-100">
-                                                <div className="flex items-center justify-between">
-                                                    <label className="text-[11px] font-bold text-gray-700">🎯 Klick-Zuweisung auf Karte:</label>
-                                                    <div className="flex rounded-md border border-gray-300 overflow-hidden text-[10px] font-bold">
-                                                        <button
-                                                            onClick={() => setClickAssignScope('off')}
-                                                            className={"px-2 py-0.5 " + (clickAssignScope === 'off' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600')}
-                                                        >
-                                                            Info-Popup
-                                                        </button>
-                                                        <button
-                                                            onClick={() => setClickAssignScope('stop')}
-                                                            className={"px-2 py-0.5 border-l border-gray-300 " + (clickAssignScope === 'stop' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600')}
-                                                        >
-                                                            + Stopp
-                                                        </button>
-                                                        <button
-                                                            onClick={() => setClickAssignScope('plz')}
-                                                            className={"px-2 py-0.5 border-l border-gray-300 " + (clickAssignScope === 'plz' ? 'bg-purple-600 text-white' : 'bg-white text-gray-600')}
-                                                        >
-                                                            + Ganze PLZ
-                                                        </button>
-                                                    </div>
-                                                </div>
-
-                                                <div className="flex gap-1.5">
-                                                    <select
-                                                        value={activeAssignTour}
-                                                        onChange={(e) => setActiveAssignTour(e.target.value)}
-                                                        className="flex-1 border border-gray-300 rounded-lg px-2 py-1 text-xs font-bold bg-white text-gray-800"
-                                                    >
-                                                        <option value="">-- Ziel-Tour für Klick wählen --</option>
-                                                        {['S1H', 'S2H', 'S3H', 'S4H', ...tours.filter(t => t !== 'Prognosen (Vorladung)' && !['S1H', 'S2H', 'S3H', 'S4H'].includes(t))].map(t => (
-                                                            <option key={t} value={t}>🎯 Ziel: {t}</option>
-                                                        ))}
-                                                    </select>
-                                                    <input
-                                                        type="text"
-                                                        value={newTourInput}
-                                                        onChange={(e) => setNewTourInput(e.target.value)}
-                                                        onKeyDown={(e) => e.key === 'Enter' && handleCreateNewTour()}
-                                                        placeholder="+ Tour (z.B. S1H)"
-                                                        className="w-28 border border-gray-300 rounded-lg px-2 py-1 text-xs bg-gray-50 focus:bg-white outline-none"
-                                                    />
-                                                    <button
-                                                        onClick={() => handleCreateNewTour()}
-                                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-2.5 py-1 rounded-lg shadow-sm"
-                                                    >
-                                                        +
-                                                    </button>
-                                                </div>
                                             </div>
                                         </div>
 
-                                        {/* Tour Cards List with SLA Status & Actions */}
-                                        <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex flex-col flex-1 min-h-0">
-                                            <div className="flex justify-between items-center mb-1.5 border-b pb-1.5 shrink-0 gap-1">
+                                        {/* Tour Cards List with Fixed Tour Code Width (No "S.." truncation!) */}
+                                        <div className="bg-white p-2.5 rounded-xl shadow-sm border border-gray-200 flex flex-col flex-1 min-h-0">
+                                            <div className="flex justify-between items-center mb-2 border-b pb-1.5 shrink-0 gap-1">
                                                 <div className="flex items-center gap-1.5">
-                                                    <label className="text-xs font-black text-gray-700 uppercase tracking-wider">Touren ({dispositionTourBoard.length})</label>
+                                                    <span className="text-xs font-black text-gray-800 whitespace-nowrap">Touren ({dispositionTourBoard.length})</span>
                                                     <button
                                                         onClick={() => setOnlyProblemToursFilter(!onlyProblemToursFilter)}
-                                                        className={"text-[10px] font-black px-2 py-0.5 rounded-full border transition-colors " + (onlyProblemToursFilter ? "bg-red-600 text-white border-red-700" : "bg-gray-100 text-gray-700 border-gray-300 hover:bg-red-50")}
+                                                        className={"text-[10px] font-black px-2 py-0.5 rounded-full border transition-colors whitespace-nowrap " + (onlyProblemToursFilter ? "bg-red-600 text-white border-red-700" : "bg-gray-100 text-gray-700 border-gray-300 hover:bg-red-50")}
                                                         title="Zeigt nur Touren mit 09:00 Express, SLA-Konflikten oder Express-Springer"
                                                     >
-                                                        {onlyProblemToursFilter ? '🔴 Fokus aktiv' : '🔴 Nur Fokus'}
+                                                        {onlyProblemToursFilter ? '🔴 Fokus an' : '🔴 Nur Fokus'}
                                                     </button>
                                                 </div>
-                                                <div className="flex items-center gap-2">
-                                                    <button onClick={() => setSelectedTours(tours)} className="text-[11px] font-bold text-emerald-700 hover:underline">Alle an</button>
+                                                <div className="flex items-center gap-1.5 shrink-0 text-[11px] font-bold">
+                                                    <button onClick={() => setSelectedTours(tours)} className="text-emerald-700 hover:underline whitespace-nowrap">Alle an</button>
                                                     <span className="text-gray-300">|</span>
-                                                    <button onClick={clearTourSelection} className="text-[11px] font-bold text-blue-600 hover:underline">Alle aus</button>
+                                                    <button onClick={clearTourSelection} className="text-blue-600 hover:underline whitespace-nowrap">Aus</button>
                                                 </div>
                                             </div>
-                                            <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-2">
+
+                                            <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-1.5">
                                                 {dispositionTourBoard
                                                     .filter(tb => !onlyProblemToursFilter || tb.isPool || tb.slaConflicts > 0 || tb.isSpringer || tb.count0900 > 0 || tb.redirectedStops > 0)
                                                     .map((tb) => {
@@ -3304,19 +3240,31 @@
                                                         return (
                                                             <div
                                                                 key={tb.tour}
-                                                                className={"p-2.5 rounded-xl border transition-all shrink-0 " + (isTarget ? 'ring-2 ring-blue-500 bg-blue-50/40 border-blue-300' : tb.slaConflicts > 0 ? 'bg-red-50/40 border-red-300 shadow-sm' : isSelected ? 'bg-slate-50 border-slate-300 shadow-sm' : 'bg-white border-gray-200 opacity-65 hover:opacity-100')}
+                                                                className={"p-2 rounded-xl border transition-all shrink-0 " + (isTarget ? 'ring-2 ring-blue-500 bg-blue-50/40 border-blue-300' : tb.slaConflicts > 0 ? 'bg-red-50/40 border-red-300 shadow-sm' : isSelected ? 'bg-slate-50 border-slate-300' : 'bg-white border-gray-200 opacity-60 hover:opacity-100')}
                                                             >
                                                                 <div className="flex items-center justify-between gap-1.5 mb-1">
-                                                                    <div className="flex items-center gap-2 cursor-pointer flex-1 min-w-0" onClick={() => toggleTourSelection(tb.tour)}>
-                                                                        <input type="checkbox" checked={isSelected} readOnly className="rounded text-blue-600 pointer-events-none" />
-                                                                        <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
+                                                                    <div className="flex items-center gap-1.5 cursor-pointer flex-1 min-w-0" onClick={() => toggleTourSelection(tb.tour)}>
+                                                                        <input type="checkbox" checked={isSelected} readOnly className="rounded text-blue-600 pointer-events-none shrink-0" />
+                                                                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
                                                                         <div className="min-w-0 flex-1">
                                                                             <div className="flex items-center gap-1.5">
-                                                                                <span className="font-black text-xs text-gray-900 truncate" title={tb.tour}>{tb.tour}</span>
-                                                                                {tb.areaName && <span className="text-[10px] font-bold text-slate-600 bg-slate-200/80 px-1.5 rounded truncate">{tb.areaName}</span>}
-                                                                                {tb.redirectedStops > 0 && <span className="text-[9px] font-black bg-indigo-100 text-indigo-800 px-1 rounded">🔀 {tb.redirectedStops}</span>}
+                                                                                <span className="font-black text-xs text-gray-900 shrink-0">{tb.tour}</span>
+                                                                                {tb.areaName && (
+                                                                                    <span className="text-[10px] font-semibold text-slate-600 bg-slate-200/70 px-1.5 py-0.2 rounded truncate" title={tb.areaName}>
+                                                                                        {tb.areaName}
+                                                                                    </span>
+                                                                                )}
+                                                                                {tb.redirectedStops > 0 && (
+                                                                                    <span className="text-[9px] font-black bg-indigo-100 text-indigo-800 px-1 rounded shrink-0">
+                                                                                        🔀+{tb.redirectedStops}
+                                                                                    </span>
+                                                                                )}
                                                                             </div>
-                                                                            {tb.driverName && <div className="text-[10px] text-gray-500 font-semibold truncate">👤 {tb.driverName}</div>}
+                                                                            {tb.driverName && (
+                                                                                <div className="text-[10px] text-gray-500 font-semibold truncate">
+                                                                                    👤 {tb.driverName}
+                                                                                </div>
+                                                                            )}
                                                                         </div>
                                                                     </div>
                                                                     <div className="flex items-center gap-1 shrink-0">
@@ -3327,7 +3275,7 @@
                                                                                     if (clickAssignScope === 'off') setClickAssignScope('stop');
                                                                                     showToast(`🎯 Klick-Zuweisung aktiv für: ${tb.tour}`);
                                                                                 }}
-                                                                                className={"px-2 py-0.5 rounded text-[10px] font-black border " + (isTarget ? "bg-blue-600 text-white border-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50")}
+                                                                                className={"px-1.5 py-0.5 rounded text-[10px] font-black border whitespace-nowrap " + (isTarget ? "bg-blue-600 text-white border-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50")}
                                                                                 title="Auf Karte klicken, um Stopps dieser Tour zuzuweisen"
                                                                             >
                                                                                 {isTarget ? '🎯 Aktiv' : '🎯 Ziel'}
@@ -3335,29 +3283,29 @@
                                                                         )}
                                                                         <button
                                                                             onClick={() => setManifestModalTour(tb.tour)}
-                                                                            className="px-1.5 py-0.5 rounded bg-slate-800 text-white text-[10px] font-bold hover:bg-black"
+                                                                            className="px-1.5 py-0.5 rounded bg-slate-800 text-white text-[10px] font-bold hover:bg-black whitespace-nowrap"
                                                                             title="Fahrer-Manifest & Stopp-Liste öffnen"
                                                                         >
-                                                                            📋 {tb.totalStops} Stp
+                                                                            {tb.totalStops} Stp
                                                                         </button>
                                                                     </div>
                                                                 </div>
 
                                                                 {/* SLA Pills & Metrics */}
-                                                                <div className="flex items-center justify-between text-[10px] font-bold gap-1 flex-wrap">
-                                                                    <div className="flex items-center gap-1">
+                                                                <div className="flex items-center justify-between text-[10px] font-bold gap-1">
+                                                                    <div className="flex items-center gap-1 flex-wrap">
                                                                         {tb.count0900 > 0 && <span className="px-1.5 py-0.2 rounded bg-red-100 text-red-800 border border-red-300">09:00×{tb.count0900}</span>}
                                                                         {tb.count1030 > 0 && <span className="px-1.5 py-0.2 rounded bg-purple-100 text-purple-800 border border-purple-300">10:30×{tb.count1030}</span>}
                                                                         {tb.count1200 > 0 && <span className="px-1.5 py-0.2 rounded bg-orange-100 text-orange-800 border border-orange-300">12:00×{tb.count1200}</span>}
                                                                         {tb.countEod > 0 && <span className="px-1.5 py-0.2 rounded bg-gray-100 text-gray-700">EOD×{tb.countEod}</span>}
                                                                     </div>
                                                                     {!tb.isPool && (
-                                                                        <div className="flex items-center gap-1.5">
-                                                                            <span className="text-gray-500">~{tb.totalKm}km</span>
+                                                                        <div className="flex items-center gap-1 shrink-0">
+                                                                            <span className="text-gray-400">~{tb.totalKm}km</span>
                                                                             {tb.slaConflicts > 0 ? (
-                                                                                <span className="text-red-700 bg-red-100 px-1.5 rounded font-black" title="Drohende SLA-Überschreitung!">⚠️ {tb.slaConflicts} SLA</span>
+                                                                                <span className="text-red-700 bg-red-100 px-1.5 rounded font-black">⚠️ {tb.slaConflicts} SLA</span>
                                                                             ) : (
-                                                                                <span className="text-emerald-700 bg-emerald-100 px-1.5 rounded font-black">✓ SLA OK ({tb.finishStr})</span>
+                                                                                <span className="text-emerald-700 bg-emerald-100 px-1.5 rounded font-black">✓ {tb.finishStr}</span>
                                                                             )}
                                                                         </div>
                                                                     )}
@@ -3370,11 +3318,11 @@
                                     </div>
 
                                     {/* Map View */}
-                                    <div className="bg-white p-2 rounded-xl shadow-sm border border-gray-200 flex-1 relative h-full">
+                                    <div className="bg-white p-1.5 rounded-xl shadow-sm border border-gray-200 flex-1 relative h-full">
                                         {/* Active Click-to-Assign Floating Banner on Map */}
                                         {activeAssignTour && clickAssignScope !== 'off' && (
-                                            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] bg-blue-700/95 text-white px-4 py-2 rounded-full shadow-2xl border-2 border-white flex items-center gap-3 text-xs font-black pointer-events-auto">
-                                                <span>🎯 KLICK-MODUS AKTIV: Klicke auf einen Marker auf der Karte → <u>{activeAssignTour}</u> ({clickAssignScope === 'plz' ? 'Ganze PLZ' : 'Stopp'})</span>
+                                            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[1000] bg-blue-700/95 text-white px-4 py-1.5 rounded-full shadow-2xl border-2 border-white flex items-center gap-3 text-xs font-black pointer-events-auto whitespace-nowrap">
+                                                <span>🎯 KLICK-MODUS: Marker anklicken → <u>{activeAssignTour}</u> ({clickAssignScope === 'plz' ? 'Ganze PLZ' : 'Stopp'})</span>
                                                 <button
                                                     onClick={() => setClickAssignScope('off')}
                                                     className="bg-white/20 hover:bg-white/30 px-2 py-0.5 rounded-full text-[10px]"
@@ -3384,60 +3332,60 @@
                                             </div>
                                         )}
                                         <div ref={mapRef} className="w-full h-full rounded-lg z-[1]"></div>
-                                        <div className="absolute top-[85px] left-[10px] z-[1000] flex flex-col items-start gap-2">
-                                            <button onClick={() => { setIsMapExpanded(!isMapExpanded); setTimeout(() => mapInstance.current && mapInstance.current.invalidateSize(), 300); }} className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-800 px-3 py-2 text-xs rounded-lg font-bold shadow-md cursor-pointer pointer-events-auto flex items-center gap-1">
-                                                {isMapExpanded ? '↙ Seitenleiste einblenden' : '↗ Vollbild-Karte'}
+
+                                        {/* Sleek Horizontal Top-Left Map Bar (next to Leaflet Zoom Controls) */}
+                                        <div className="absolute top-3 left-14 z-[1000] flex items-center gap-1.5 pointer-events-auto flex-wrap">
+                                            <button
+                                                onClick={() => { setIsMapExpanded(!isMapExpanded); setTimeout(() => mapInstance.current && mapInstance.current.invalidateSize(), 300); }}
+                                                className="bg-white/95 hover:bg-white border border-gray-300 text-gray-800 px-2.5 py-1.5 text-[11px] rounded-lg font-bold shadow cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                                            >
+                                                {isMapExpanded ? '↙ Liste' : '⛶ Vollbild'}
                                             </button>
-                                            {/* Переключатель слоёв карты Google Maps / OSM */}
-                                            <div className="bg-white/95 backdrop-blur-sm p-1.5 rounded-xl shadow-lg border border-gray-300 flex flex-col gap-1 pointer-events-auto">
-                                                <div className="text-[9px] font-black uppercase text-gray-400 px-1.5 tracking-wider">Karten-Typ (Google / OSM)</div>
-                                                <div className="grid grid-cols-2 gap-1">
-                                                    <button onClick={() => handleSwitchMapTile('g_road')} className={"px-2 py-1 rounded text-[10px] font-bold border transition-colors text-left " + (mapTileType === 'g_road' ? 'bg-blue-600 text-white border-blue-700' : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100')}>
-                                                        🗺️ Google
-                                                    </button>
-                                                    <button onClick={() => handleSwitchMapTile('g_traffic')} className={"px-2 py-1 rounded text-[10px] font-bold border transition-colors text-left " + (mapTileType === 'g_traffic' ? 'bg-red-600 text-white border-red-700' : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100')}>
-                                                        🚦 Verkehr
-                                                    </button>
-                                                    <button onClick={() => handleSwitchMapTile('g_hybrid')} className={"px-2 py-1 rounded text-[10px] font-bold border transition-colors text-left " + (mapTileType === 'g_hybrid' ? 'bg-indigo-600 text-white border-indigo-700' : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100')}>
-                                                        🛰️ Satellit
-                                                    </button>
-                                                    <button onClick={() => handleSwitchMapTile('osm')} className={"px-2 py-1 rounded text-[10px] font-bold border transition-colors text-left " + (mapTileType === 'osm' ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100')}>
-                                                        🌍 OSM
-                                                    </button>
-                                                </div>
+                                            <div className="bg-white/95 backdrop-blur-sm p-1 rounded-lg shadow border border-gray-300 flex items-center gap-1">
+                                                <button onClick={() => handleSwitchMapTile('g_road')} className={"px-2 py-1 rounded text-[10px] font-bold transition-colors whitespace-nowrap " + (mapTileType === 'g_road' ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100')}>
+                                                    🗺️ Google
+                                                </button>
+                                                <button onClick={() => handleSwitchMapTile('g_traffic')} className={"px-2 py-1 rounded text-[10px] font-bold transition-colors whitespace-nowrap " + (mapTileType === 'g_traffic' ? 'bg-red-600 text-white' : 'text-gray-700 hover:bg-gray-100')}>
+                                                    🚦 Verkehr
+                                                </button>
+                                                <button onClick={() => handleSwitchMapTile('g_hybrid')} className={"px-2 py-1 rounded text-[10px] font-bold transition-colors whitespace-nowrap " + (mapTileType === 'g_hybrid' ? 'bg-indigo-600 text-white' : 'text-gray-700 hover:bg-gray-100')}>
+                                                    🛰️ Satellit
+                                                </button>
+                                                <button onClick={() => handleSwitchMapTile('osm')} className={"px-2 py-1 rounded text-[10px] font-bold transition-colors whitespace-nowrap " + (mapTileType === 'osm' ? 'bg-emerald-600 text-white' : 'text-gray-700 hover:bg-gray-100')}>
+                                                    🌍 OSM
+                                                </button>
                                             </div>
                                             {highlightIdle && (
-                                                <button onClick={() => setHighlightIdle(null)} className="bg-red-600 hover:bg-red-700 text-white border border-red-800 px-4 py-2 text-xs rounded-lg font-bold shadow-xl cursor-pointer pointer-events-auto flex items-center gap-1 animate-pulse">
+                                                <button onClick={() => setHighlightIdle(null)} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 text-[11px] rounded-lg font-bold shadow-lg cursor-pointer flex items-center gap-1 whitespace-nowrap">
                                                     ✕ Fokus aufheben
                                                 </button>
                                             )}
                                         </div>
-                                        <div className="absolute top-4 right-4 z-[1000] flex flex-col items-end pointer-events-none gap-2">
-                                            <div className="flex gap-1.5 pointer-events-auto bg-white/90 backdrop-blur-sm p-1.5 rounded-xl shadow border border-gray-200">
-                                                <button onClick={() => setShowBDRFilter(!showBDRFilter)} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (showBDRFilter ? "bg-[#fef08a] border-[#eab308] text-[#854d0e]" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+
+                                        <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end pointer-events-none gap-2">
+                                            <div className="flex gap-1 pointer-events-auto bg-white/95 backdrop-blur-sm p-1 rounded-lg shadow border border-gray-200">
+                                                <button onClick={() => setShowBDRFilter(!showBDRFilter)} className={"px-2 py-1 rounded font-bold text-[11px] border transition-colors flex items-center gap-1 " + (showBDRFilter ? "bg-[#fef08a] border-[#eab308] text-[#854d0e]" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full border-2 " + (showBDRFilter ? 'border-[#854d0e]' : 'border-gray-400')}></span> BDR
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, '0900': !p['0900'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['0900'] ? "bg-red-50 border-red-300 text-red-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, '0900': !p['0900'] }))} className={"px-2 py-1 rounded font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['0900'] ? "bg-red-50 border-red-300 text-red-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['0900'] ? 'bg-[#dc2626]' : 'bg-gray-400')}></span> 09:00
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, '1030': !p['1030'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['1030'] ? "bg-purple-50 border-purple-300 text-purple-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, '1030': !p['1030'] }))} className={"px-2 py-1 rounded font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['1030'] ? "bg-purple-50 border-purple-300 text-purple-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['1030'] ? 'bg-[#8b5cf6]' : 'bg-gray-400')}></span> 10:30
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, '1200': !p['1200'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['1200'] ? "bg-orange-50 border-orange-300 text-orange-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, '1200': !p['1200'] }))} className={"px-2 py-1 rounded font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['1200'] ? "bg-orange-50 border-orange-300 text-orange-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['1200'] ? 'bg-[#f97316]' : 'bg-gray-400')}></span> 12:00
                                                 </button>
-                                                <button onClick={() => setExpFilters(p => ({ ...p, 'OTHER': !p['OTHER'] }))} className={"px-2.5 py-1 rounded-lg font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['OTHER'] ? "bg-pink-50 border-pink-300 text-pink-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
+                                                <button onClick={() => setExpFilters(p => ({ ...p, 'OTHER': !p['OTHER'] }))} className={"px-2 py-1 rounded font-bold text-[11px] border transition-colors flex items-center gap-1 " + (expFilters['OTHER'] ? "bg-pink-50 border-pink-300 text-pink-800" : "bg-white border-gray-200 text-gray-400 opacity-60")}>
                                                     <span className={"w-2 h-2 rounded-full " + (expFilters['OTHER'] ? 'bg-[#ec4899]' : 'bg-gray-400')}></span> Sonstige
                                                 </button>
                                             </div>
                                         </div>
-                                        <div className="absolute bottom-5 left-5 z-[1000] bg-white/95 p-3 rounded-xl shadow-xl border border-slate-200 text-[10px] font-bold space-y-1 pointer-events-none">
-                                            <div className="text-slate-800 uppercase tracking-tighter mb-1 border-b pb-1">SLA Marker-Farben</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#dc2626] inline-block"></span> Express 09:00</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] inline-block"></span> Express 10:30</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#f97316] inline-block"></span> Express 12:00</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#eab308] inline-block"></span> Saver (EOD)</div>
-                                            <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full bg-[#3b82f6] inline-block"></span> Standard</div>
+                                        <div className="absolute bottom-4 left-3 z-[1000] bg-white/95 px-2.5 py-2 rounded-lg shadow-md border border-slate-200 text-[10px] font-bold flex items-center gap-3 pointer-events-none">
+                                            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#dc2626] inline-block"></span> 09:00</span>
+                                            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] inline-block"></span> 10:30</span>
+                                            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#f97316] inline-block"></span> 12:00</span>
+                                            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#eab308] inline-block"></span> EOD</span>
                                         </div>
                                     </div>
                                 </div>
@@ -3565,7 +3513,7 @@
                                                             <div className="min-w-0 flex-1">
                                                                 <div className="flex items-center gap-1.5 flex-wrap">
                                                                     <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
-                                                                    <h3 className="font-black text-sm text-gray-900 truncate" title={tb.tour}>{tb.tour}</h3>
+                                                                    <h3 className="font-black text-sm text-gray-900 shrink-0" title={tb.tour}>{tb.tour}</h3>
                                                                     {tb.areaName && (
                                                                         <span className="text-[10px] font-bold bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded truncate max-w-[130px]" title={tb.areaName}>
                                                                             📍 {tb.areaName}
