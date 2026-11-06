@@ -591,6 +591,10 @@
                 } catch (_) { return {}; }
             });
             const [manifestModalTour, setManifestModalTour] = useState(null);
+            const [showEveningTabs, setShowEveningTabs] = useState(false);
+            const [showBeltSheetModal, setShowBeltSheetModal] = useState(false);
+            const [showCriticalPanel, setShowCriticalPanel] = useState(true);
+            const [onlyProblemToursFilter, setOnlyProblemToursFilter] = useState(false);
             const [toastMessage, setToastMessage] = useState(null);
 
             const showToast = (msg) => {
@@ -611,6 +615,7 @@
                         setStreetViewStop(null);
                         setShowApiModal(false);
                         setManifestModalTour(null);
+                        setShowBeltSheetModal(false);
                     }
                 };
                 window.addEventListener('keydown', handleKeyDown);
@@ -647,12 +652,12 @@
                         const allData = await GeoDB.getAll();
                         setPlzCoordsCache(allData);
 
-                        // Восстановление ранее загруженных данных из SQLite (api.php) или IndexedDB с авто-обновлением точных координат из ups_cache.db
+                        // Восстановление ранее загруженных данных из SQLite (api.php) или IndexedDB с авто-обновлением точных координат и авто-распределением по S01-S42
                         const restoredReport = await GeoDB.getReport('current_ups_data');
                         const restoredRows = restoredReport && Array.isArray(restoredReport.data) ? restoredReport.data : (Array.isArray(restoredReport) ? restoredReport : null);
                         if (restoredRows && restoredRows.length > 0) {
                             const seenAddr = {};
-                            const withIds = restoredRows.map((r, idx) => {
+                            let withIds = restoredRows.map((r, idx) => {
                                 const item = { ...r, _uid: r._uid || `pkg_${idx}_${r.trackingNr || r.seq}` };
                                 if (item.isForecast) {
                                     const nk = normalizeAddressKey(item.street, item.postalCode, item.city);
@@ -672,10 +677,17 @@
                                 }
                                 return item;
                             });
-                            setData(withIds);
-                            if (restoredReport && restoredReport.fileName) setFileName(restoredReport.fileName);
                             const hasFc = withIds.some(r => r.isForecast);
                             setIsForecastMode(hasFc);
+                            if (hasFc) {
+                                const distResult = autoDistributeToNativeSTours(withIds);
+                                withIds = distResult.rows;
+                                if (distResult.didAssignFromPool) {
+                                    GeoDB.saveReport('current_ups_data', withIds, (restoredReport && restoredReport.fileName) || 'ExpressForecast', true);
+                                }
+                            }
+                            setData(withIds);
+                            if (restoredReport && restoredReport.fileName) setFileName(restoredReport.fileName);
                             const ut = [...new Set(withIds.map(r => r.tour))].sort();
                             setTours(ut);
                             setSelectedTours(ut);
@@ -1428,12 +1440,18 @@
                     combinedData = applyCoordsToForecast(combinedData, coordsDict);
                 }
 
-                // Мгновенно отображаем данные в дашборде
+                // Мгновенно отображаем данные в дашборде + Zero-Click распределение по родным турам S01–S42
                 combinedData = combinedData.map((r, idx) => ({ ...r, _uid: r._uid || `pkg_${idx}_${r.trackingNr || r.seq}` }));
-                const uniqueTours = [...new Set(combinedData.map(r => r.tour))].sort();
+                if (hasForecast) {
+                    combinedData = autoDistributeToNativeSTours(combinedData);
+                }
+                const uniqueTours = [...new Set(combinedData.map(r => r.tour))].filter(t => t !== 'Prognosen (Vorladung)' || combinedData.some(r => r.tour === t)).sort();
                 setData(combinedData);
                 setTours(uniqueTours);
                 setSelectedTours(uniqueTours);
+                if (uniqueTours.length > 0 && !activeAssignTour) {
+                    setActiveAssignTour(uniqueTours[0]);
+                }
                 setIdleTourFilter('Alle');
 
                 try {
@@ -1513,7 +1531,7 @@
                         }
 
                         setPlzCoordsCache({ ...coordsDict });
-                        const updatedData = applyCoordsToForecast([...combinedData], coordsDict);
+                        const updatedData = autoDistributeToNativeSTours(applyCoordsToForecast([...combinedData], coordsDict));
                         setData(updatedData);
                         await GeoDB.saveReport('current_ups_data', updatedData, currentUploadName, hasForecast);
                     }
@@ -1542,7 +1560,7 @@
             // ============================================================================
             // MORNING EXPRESS DISPOSITION ENGINE (Real S01-S42 ZIV Intelligence & SLA ETA)
             // ============================================================================
-            const normStreetForZiv = (street, keepNum = false) => {
+            function normStreetForZiv(street, keepNum = false) {
                 let s = String(street || '').toUpperCase().replace(/\*/g, 'S').replace(/@/g, '');
                 s = s.replace(/[,.;]+/g, ' ');
                 s = s.replace(/STRASSE/g, 'STR').replace(/STRAßE/g, 'STR').replace(/STR\./g, 'STR');
@@ -1550,9 +1568,9 @@
                 if (keepNum) return s;
                 const m = s.match(/^([A-ZÄÖÜß\-\s]+?)\s*(\d+.*)?$/);
                 return (m && m[1] ? m[1] : s).trim();
-            };
+            }
 
-            const getHistoricalSTourInfo = (street, plzStr, lat, lng) => {
+            function getHistoricalSTourInfo(street, plzStr, lat, lng) {
                 const plz = String(plzStr || '').trim().padStart(5, '0');
                 const ziv = (typeof SVD_ZIV_INTELLIGENCE !== 'undefined' && SVD_ZIV_INTELLIGENCE) ? SVD_ZIV_INTELLIGENCE : { tours: {}, plzPrimary: {}, plzAlt: {}, streetMap: {} };
 
@@ -1617,7 +1635,7 @@
                     avgFirstStop: meta.avgFirstStop || '08:55',
                     stopsPerHour: meta.stopsPerHour || 8.0
                 };
-            };
+            }
 
             const getRegionalCorridorTour = (plzStr, lat, lng) => {
                 const plzNum = parseInt(String(plzStr || '').trim(), 10);
@@ -1665,7 +1683,7 @@
                 return 'T-01 DD-Zentrum';
             };
 
-            const optimizeTourStopSequence = (rowsForTour) => {
+            function optimizeTourStopSequence(rowsForTour) {
                 if (!rowsForTour || rowsForTour.length === 0) return [];
                 const stopGroups = new Map();
                 rowsForTour.forEach(r => {
@@ -1714,7 +1732,57 @@
                     });
                 });
                 return result;
-            };
+            }
+
+            // 06:30 Zero-Click Auto-Distribution into real October S01-S42 tours
+            function autoDistributeToNativeSTours(rowsList) {
+                if (!rowsList || !rowsList.length) return [];
+                const assigned = rowsList.map(r => {
+                    if (r.isForecast) {
+                        const info = getHistoricalSTourInfo(r.street, r.postalCode, r.lat, r.lng);
+                        const nativeT = r.nativeTour || info.primaryTour;
+                        const targetT = (!r.tour || r.tour === 'Prognosen (Vorladung)') ? nativeT : r.tour;
+                        return { ...r, nativeTour: nativeT, tour: targetT };
+                    }
+                    return r;
+                });
+
+                const byTour = {};
+                assigned.forEach(r => {
+                    if (!byTour[r.tour]) byTour[r.tour] = [];
+                    byTour[r.tour].push(r);
+                });
+
+                let finalData = [];
+                const tourKeys = Object.keys(byTour).sort();
+                tourKeys.forEach(tName => {
+                    finalData = finalData.concat(
+                        tName === 'Prognosen (Vorladung)' ? byTour[tName] : optimizeTourStopSequence(byTour[tName])
+                    );
+                });
+
+                // Pre-populate historical driver names for S01-S42
+                if (typeof SVD_ZIV_INTELLIGENCE !== 'undefined' && SVD_ZIV_INTELLIGENCE.tours) {
+                    setTourDriverMeta(prev => {
+                        const nextMeta = { ...(prev || {}) };
+                        let changed = false;
+                        tourKeys.forEach(tName => {
+                            const zMeta = SVD_ZIV_INTELLIGENCE.tours[tName];
+                            if (zMeta && zMeta.driver && (!nextMeta[tName] || !nextMeta[tName].driver)) {
+                                nextMeta[tName] = { ...(nextMeta[tName] || {}), driver: zMeta.driver, area: zMeta.area || '' };
+                                changed = true;
+                            }
+                        });
+                        if (changed) {
+                            try { localStorage.setItem('ups_tour_driver_meta', JSON.stringify(nextMeta)); } catch (_) {}
+                            return nextMeta;
+                        }
+                        return prev;
+                    });
+                }
+
+                return finalData;
+            }
 
             const persistUpdatedData = async (nextData, nextToursList = null) => {
                 const computedTours = nextToursList || [...new Set([...tours, ...nextData.map(r => r.tour)])].filter(t => {
@@ -1965,13 +2033,12 @@
                 const stopDur = Number(serviceStopDuration) || 3;
                 const zivTours = (typeof SVD_ZIV_INTELLIGENCE !== 'undefined' && SVD_ZIV_INTELLIGENCE.tours) ? SVD_ZIV_INTELLIGENCE.tours : {};
 
-                const allTourNames = [...new Set([...tours, ...data.map(r => r.tour)])].sort((a, b) => {
-                    if (a === 'Prognosen (Vorladung)') return -1;
-                    if (b === 'Prognosen (Vorladung)') return 1;
-                    return a.localeCompare(b);
+                const allTourNames = [...new Set([...tours, ...data.map(r => r.tour)])].filter(tName => {
+                    if (tName === 'Prognosen (Vorladung)') return data.some(r => r.tour === tName);
+                    return true;
                 });
 
-                return allTourNames.map((tName, tIdx) => {
+                const boardList = allTourNames.map((tName, tIdx) => {
                     const rows = data.filter(r => r.tour === tName).sort((a, b) => a.seq - b.seq);
                     const isPool = tName === 'Prognosen (Vorladung)';
                     const zMeta = zivTours[tName] || {};
@@ -2000,7 +2067,7 @@
                                 commit: r.commit || 'EOD',
                                 service: r.service,
                                 pkgCount: 1,
-                                histPrimaryTour: zivInfo.primaryTour,
+                                histPrimaryTour: r.nativeTour || zivInfo.primaryTour,
                                 histAltTour: zivInfo.altTour,
                                 springerTour: zivInfo.springerTour,
                                 histMatchSource: zivInfo.matchSource,
@@ -2025,6 +2092,7 @@
                     let totalKm = 0;
                     let slaConflicts = 0;
                     let tightStops = 0;
+                    let redirectedStops = 0;
                     const cachedOsrm = osrmRoutings[tName];
 
                     const stopSchedule = uniqueStops.map((st, idx) => {
@@ -2053,6 +2121,9 @@
                         if (!isPool && st.commit !== 'EOD') {
                             if (bufferMins < 0) slaConflicts++;
                             else if (bufferMins <= 12) tightStops++;
+                        }
+                        if (!isPool && st.histPrimaryTour && st.histPrimaryTour !== tName) {
+                            redirectedStops++;
                         }
                         curMins += stopDur;
                         prevLat = st.lat || prevLat;
@@ -2095,6 +2166,7 @@
                         count1200,
                         countEod,
                         countBdr,
+                        redirectedStops,
                         totalKm: (cachedOsrm && cachedOsrm.totalRoadKm) ? cachedOsrm.totalRoadKm : totalKm.toFixed(1),
                         finishStr,
                         slaConflicts,
@@ -2106,7 +2178,155 @@
                         vehicle: (tourDriverMeta[tName] && tourDriverMeta[tName].vehicle) || ''
                     };
                 });
-            }, [data, tours, routeStartTime, serviceStopDuration, tourDriverMeta, osrmRoutings]);
+
+                // Risk-First Sorting for Morning Dispatcher (06:30-06:45):
+                // 1. Pool (if any unassigned) -> 2. SLA Conflicts -> 3. Express-Springers (S1H-S4H) -> 4. 09:00 Tours -> 5. 10:30 Tours -> 6. Alphabetical
+                return boardList.sort((a, b) => {
+                    if (a.isPool !== b.isPool) return a.isPool ? -1 : 1;
+                    if (isForecastMode) {
+                        if (a.slaConflicts !== b.slaConflicts) return b.slaConflicts - a.slaConflicts;
+                        if (a.isSpringer !== b.isSpringer) return a.isSpringer ? -1 : 1;
+                        if ((a.count0900 > 0) !== (b.count0900 > 0)) return b.count0900 - a.count0900;
+                        if ((a.count1030 > 0) !== (b.count1030 > 0)) return b.count1030 - a.count1030;
+                    }
+                    return a.tour.localeCompare(b.tour);
+                });
+            }, [data, tours, routeStartTime, serviceStopDuration, tourDriverMeta, osrmRoutings, isForecastMode]);
+
+            // 06:30 Exception Focus: All 09:00 Express stops & any stops with SLA conflict (bufferMins < 0)
+            const criticalMorningStops = useMemo(() => {
+                const list = [];
+                dispositionTourBoard.forEach(tb => {
+                    tb.stopSchedule.forEach(st => {
+                        const isConflict = !tb.isPool && st.commit !== 'EOD' && st.bufferMins < 0;
+                        const is0900 = st.commit === '09:00';
+                        const isTight = !tb.isPool && st.commit !== 'EOD' && st.bufferMins >= 0 && st.bufferMins <= 10;
+                        if (isConflict || is0900 || isTight) {
+                            list.push({
+                                ...st,
+                                currentTour: tb.tour,
+                                driverName: tb.driverName,
+                                areaName: tb.areaName,
+                                isConflict,
+                                is0900,
+                                isTight
+                            });
+                        }
+                    });
+                });
+                return list.sort((a, b) => {
+                    if (a.isConflict !== b.isConflict) return a.isConflict ? -1 : 1;
+                    if (a.is0900 !== b.is0900) return a.is0900 ? -1 : 1;
+                    return a.bufferMins - b.bufferMins;
+                });
+            }, [dispositionTourBoard]);
+
+            // 06:45 Belt Redirections ("Umverfügungen am Sortierband"): Packages moved away from their native S01-S42 tour
+            const beltRedirections = useMemo(() => {
+                const list = [];
+                dispositionTourBoard.forEach(tb => {
+                    if (tb.isPool) return;
+                    tb.stopSchedule.forEach(st => {
+                        if (st.histPrimaryTour && st.histPrimaryTour !== tb.tour) {
+                            list.push({
+                                fromTour: st.histPrimaryTour,
+                                toTour: tb.tour,
+                                toDriver: tb.driverName || '',
+                                isSpringerTarget: tb.isSpringer,
+                                commit: st.commit,
+                                etaStr: st.etaStr,
+                                stopIndex: st.stopIndex,
+                                postalCode: st.postalCode,
+                                city: st.city,
+                                street: st.street,
+                                recipient: st.recipient || '',
+                                pkgCount: st.pkgCount,
+                                trackingNrs: st.rows.map(r => r.trackingNr).filter(Boolean).join(', '),
+                                sampleRow: st.rows[0]
+                            });
+                        }
+                    });
+                });
+                return list.sort((a, b) => a.fromTour.localeCompare(b.fromTour) || a.toTour.localeCompare(b.toTour));
+            }, [dispositionTourBoard]);
+
+            // 1-Click "Tour fällt heute aus" (Dissolve a cancelled tour to Neighbor S-Tours & Express-Springers)
+            const handleDissolveTourToNeighbors = async (cancelledTour) => {
+                const tb = dispositionTourBoard.find(x => x.tour === cancelledTour);
+                if (!tb || tb.totalPackages === 0) return;
+
+                const stopTargetMap = new Map();
+                const targetSummary = {};
+                tb.stopSchedule.forEach(st => {
+                    let targetT = st.histAltTour && st.histAltTour !== cancelledTour ? st.histAltTour : (st.springerTour || 'S2H');
+                    if (st.commit === '09:00') {
+                        targetT = st.springerTour || targetT;
+                    }
+                    if (targetT === cancelledTour) targetT = 'S2H';
+                    stopTargetMap.set(st.key, targetT);
+                    targetSummary[targetT] = (targetSummary[targetT] || 0) + st.pkgCount;
+                });
+
+                const nextData = data.map(r => {
+                    if (r.tour !== cancelledTour) return r;
+                    const k = normalizeAddressKey(r.street, r.postalCode, r.city) || `${r.seq}_${r.lat}`;
+                    const targetT = stopTargetMap.get(k) || 'S2H';
+                    return { ...r, tour: targetT };
+                });
+
+                const byTour = {};
+                nextData.forEach(r => {
+                    if (!byTour[r.tour]) byTour[r.tour] = [];
+                    byTour[r.tour].push(r);
+                });
+                let finalData = [];
+                const finalTours = Object.keys(byTour).sort();
+                finalTours.forEach(tName => {
+                    finalData = finalData.concat(tName === 'Prognosen (Vorladung)' ? byTour[tName] : optimizeTourStopSequence(byTour[tName]));
+                });
+
+                await persistUpdatedData(finalData, finalTours);
+                const summaryStr = Object.entries(targetSummary).map(([t, c]) => `${t} (${c})`).join(', ');
+                showToast(`🔄 Tour ${cancelledTour} aufgelöst → verteilt auf: ${summaryStr}`);
+            };
+
+            const handleCopyBeltSheetWhatsApp = () => {
+                const springerTours = dispositionTourBoard.filter(tb => tb.isSpringer && tb.totalStops > 0);
+                const stops0900 = criticalMorningStops.filter(s => s.is0900);
+
+                const lines = [
+                    `📢 *UPS 06:45 BAND-ANWEISUNG & EXPRESS-DISPO*`,
+                    `📅 Datei: ${fileName || 'Vorladung'} | Abfahrt: ${routeStartTime} Uhr`,
+                    `===================================`,
+                    `🔀 *1. UMVERFÜGUNGEN AM SORTIERBAND (${beltRedirections.length} Stopps)*`,
+                    beltRedirections.length === 0
+                        ? `✓ Keine Umverfügungen — alle Pakete bleiben auf ihren Stamm-Touren (S01–S42)!`
+                        : beltRedirections.map((b, idx) =>
+                            `${idx + 1}. *Aus ${b.fromTour} ➔ In ${b.toTour}* [${b.commit}] — ${b.postalCode} ${b.city}, ${b.street} ${b.recipient ? '(' + b.recipient + ')' : ''} [${b.pkgCount} Pkt]`
+                        ).join('\n'),
+                    `===================================`,
+                    `🔴 *2. 09:00 UHR EXPRESS-CHECKLISTE (${stops0900.length} Stopps)*`,
+                    stops0900.length === 0
+                        ? `✓ Keine 09:00 Uhr Express-Sendungen heute.`
+                        : stops0900.map((s, idx) =>
+                            `${idx + 1}. *${s.currentTour}* (${s.driverName || 'Fahrer'}) | ETA ${s.etaStr} — ${s.postalCode} ${s.city}, ${s.street} ${s.recipient ? '(' + s.recipient + ')' : ''}`
+                        ).join('\n'),
+                    ...(springerTours.length > 0 ? [
+                        `===================================`,
+                        `⚡ *3. EXPRESS-SPRINGER TOUREN (${springerTours.map(s => s.tour).join(', ')})*`,
+                        ...springerTours.map(sp => [
+                            `\n🚐 *${sp.tour}* ${sp.driverName ? '(' + sp.driverName + ')' : ''} — ${sp.totalStops} Stopps (${sp.totalPackages} Pkt) | ~${sp.totalKm} km`,
+                            ...sp.stopSchedule.map(st => `  ${st.stopIndex}. [${st.commit}] ETA ${st.etaStr} (aus ${st.histPrimaryTour}) — ${st.postalCode} ${st.city}, ${st.street} ${st.recipient ? '(' + st.recipient + ')' : ''}`),
+                            sp.googleNavUrl ? `  🧭 Route: ${sp.googleNavUrl}` : ''
+                        ].filter(Boolean).join('\n'))
+                    ] : [])
+                ].join('\n');
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(lines);
+                    showToast('📋 06:45 Band-Anweisung & Springer-Liste für WhatsApp in Zwischenablage kopiert!');
+                }
+            };
 
             // 1-Click Automatic SLA Conflict Resolver (Offloads late 09:00/10:30/12:00 stops to Neighbor S-Tour or S1H-S4H Express-Springer)
             const handleResolveSlaConflictsWithSpringer = async () => {
@@ -2169,7 +2389,7 @@
                     `🔴 09:00: ${tourSummary.count0900} | 🟣 10:30: ${tourSummary.count1030} | 🟠 12:00: ${tourSummary.count1200}`,
                     `-----------------------------------`,
                     ...tourSummary.stopSchedule.map(st =>
-                        `${st.stopIndex}. [${st.commit}] ETA ${st.etaStr} — ${st.postalCode} ${st.city}, ${st.street} ${st.recipient ? '(' + st.recipient + ')' : ''} [${st.pkgCount} Pkt]`
+                        `${st.stopIndex}. [${st.commit}] ETA ${st.etaStr}${st.histPrimaryTour && st.histPrimaryTour !== tourSummary.tour ? ` [🔀 aus ${st.histPrimaryTour}]` : ''} — ${st.postalCode} ${st.city}, ${st.street} ${st.recipient ? '(' + st.recipient + ')' : ''} [${st.pkgCount} Pkt]`
                     ),
                     `-----------------------------------`,
                     tourSummary.googleNavUrl ? `🧭 Google Maps Route:\n${tourSummary.googleNavUrl}` : ''
@@ -2187,7 +2407,9 @@
                     tb.stopSchedule.forEach(st => {
                         st.rows.forEach(r => {
                             exportRows.push({
-                                Tour: tb.tour,
+                                Ziel_Tour: tb.tour,
+                                Stamm_Tour_ZIV: st.histPrimaryTour || tb.tour,
+                                Umverfuegung: (st.histPrimaryTour && st.histPrimaryTour !== tb.tour) ? `AUS ${st.histPrimaryTour} -> IN ${tb.tour}` : 'Stamm-Tour',
                                 Fahrer: tb.driverName || '',
                                 Stopp_Nr: st.stopIndex,
                                 Commit_SLA: st.commit,
@@ -2685,11 +2907,7 @@
                                     <div className="text-[9px] uppercase text-slate-400 font-bold">Gesamt</div>
                                     <div className="text-sm font-black text-white">{data.length}</div>
                                 </div>
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10 cursor-pointer" onClick={() => setActiveTab('disposition')}>
-                                    <div className="text-[9px] uppercase text-amber-300 font-bold">Offen (Pool)</div>
-                                    <div className={"text-sm font-black " + (unassignedCount > 0 ? "text-[#FFB500] animate-pulse" : "text-emerald-400")}>{unassignedCount}</div>
-                                </div>
-                                <div className="px-2.5 py-0.5 text-center border-r border-white/10">
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10 cursor-pointer" onClick={() => setShowCriticalPanel(true)} title="Kritische 09:00 Uhr Express-Stopps">
                                     <div className="text-[9px] uppercase text-red-400 font-bold">09:00 AM</div>
                                     <div className="text-sm font-black text-red-400">{total0900}</div>
                                 </div>
@@ -2702,25 +2920,29 @@
                                     <div className="text-sm font-black text-orange-300">{total1200}</div>
                                 </div>
                                 <div className="px-2.5 py-0.5 text-center border-r border-white/10">
-                                    <div className="text-[9px] uppercase text-sky-300 font-bold">Touren</div>
+                                    <div className="text-[9px] uppercase text-sky-300 font-bold">S-Touren</div>
                                     <div className="text-sm font-black text-sky-300">{concreteToursCount}</div>
                                 </div>
-                                <div className="px-2 py-0.5 text-center">
+                                <div className="px-2.5 py-0.5 text-center border-r border-white/10 cursor-pointer" onClick={() => setShowBeltSheetModal(true)} title="Umverfügungen für das Sortierband um 06:45 Uhr anzeigen">
+                                    <div className="text-[9px] uppercase text-amber-300 font-bold">Band-Umverf.</div>
+                                    <div className="text-sm font-black text-[#FFB500]">{beltRedirections.length}</div>
+                                </div>
+                                <div className="px-2 py-0.5 text-center cursor-pointer" onClick={() => setShowCriticalPanel(true)}>
                                     <div className="text-[9px] uppercase text-slate-400 font-bold">SLA Risiko</div>
-                                    <div className={"text-sm font-black " + (totalSlaRisks > 0 ? "text-red-400" : "text-emerald-400")}>{totalSlaRisks === 0 ? '✓ 0' : `⚠️ ${totalSlaRisks}`}</div>
+                                    <div className={"text-sm font-black " + (totalSlaRisks > 0 ? "text-red-400 animate-pulse" : "text-emerald-400")}>{totalSlaRisks === 0 ? '✓ 0' : `⚠️ ${totalSlaRisks}`}</div>
                                 </div>
                             </div>
                         )}
 
                         {/* Actions & File Upload */}
-                        <div className="flex items-center gap-2.5 flex-wrap w-full xl:w-auto justify-end">
+                        <div className="flex items-center gap-2 flex-wrap w-full xl:w-auto justify-end">
                             {data.length > 0 && (
                                 <button
-                                    onClick={() => handleRunAutoDisposition('stours')}
+                                    onClick={() => setShowBeltSheetModal(true)}
                                     className="bg-gradient-to-r from-amber-400 to-[#FFB500] hover:from-yellow-400 hover:to-yellow-500 text-[#1e1410] font-black text-xs px-3.5 py-2 rounded-lg shadow-sm flex items-center gap-1.5 transition-transform active:scale-95"
-                                    title="Verteilt alle Sendungen anhand der realen Oktober-Historie (ups_dispo.db: Straße + PLZ) automatisch auf die echten Touren S01–S42 inkl. Fahrer & SLA-Reihenfolge"
+                                    title="Öffnet die 06:45 Uhr Band-Anweisung (alle Umverfügungen Aus Stamm-Tour ➔ In Ziel-Tour), 09:00 Checkliste & Springer-Zettel zum Drucken oder für WhatsApp"
                                 >
-                                    🏭 1-Klick S-Touren Dispo (S01–S42)
+                                    📋 06:45 Band-Anweisung ({beltRedirections.length})
                                 </button>
                             )}
                             {data.length > 0 && totalSlaRisks > 0 && (
@@ -2773,36 +2995,54 @@
 
                     {/* 2. Navigation Bar */}
                     {data.length > 0 && (
-                        <div className="shrink-0 flex items-center justify-between bg-white px-3 py-1.5 rounded-xl shadow-sm border border-gray-200 overflow-x-auto custom-scrollbar mb-2.5 gap-2">
+                        <div className="shrink-0 flex items-center justify-between bg-white px-3 py-1.5 rounded-xl shadow-sm border border-gray-200 overflow-x-auto custom-scrollbar mb-2 gap-2">
                             <div className="flex items-center gap-1">
                                 <button onClick={() => setActiveTab('map')} className={"py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'map' ? 'bg-[#351C15] text-[#FFB500] shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
                                     🗺️ Karte &amp; Live-Zuweisung
                                 </button>
                                 <button onClick={() => setActiveTab('disposition')} className={"py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'disposition' ? 'bg-[#FFB500] text-[#1e1410] shadow-sm' : 'text-gray-700 bg-amber-50/70 hover:bg-amber-100/80 border border-amber-200')}>
-                                    ⚡ Express-Disposition (Touren-Board)
-                                    {unassignedCount > 0 && <span className="bg-red-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">{unassignedCount} offen</span>}
+                                    ⚡ Touren-Board (S01–S42)
+                                    {totalSlaRisks > 0 && <span className="bg-red-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">⚠️ {totalSlaRisks}</span>}
                                 </button>
-                                <button onClick={() => setActiveTab('table')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'table' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                <button onClick={() => setShowBeltSheetModal(true)} className="py-1.5 px-3.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 bg-indigo-50 text-indigo-900 hover:bg-indigo-100 border border-indigo-200">
+                                    📋 06:45 Band-Anweisung &amp; Springer
+                                    {beltRedirections.length > 0 && <span className="bg-indigo-600 text-white px-1.5 py-0.2 rounded-full text-[10px]">{beltRedirections.length}</span>}
+                                </button>
+                                <button onClick={() => setActiveTab('table')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'table' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
                                     📋 Sendungs-Tabelle <span className={"py-0.2 px-1.5 rounded-full text-[10px] font-black " + (activeTab === 'table' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800')}>{data.length}</span>
                                 </button>
-                                <button onClick={() => setActiveTab('plz')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'plz' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                <button onClick={() => setActiveTab('plz')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'plz' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
                                     📮 PLZ-Matrix
                                 </button>
-                                <button onClick={() => setActiveTab('google_hub')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 " + (activeTab === 'google_hub' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                    🧭 SLA-Routen &amp; Adress-Prüfung
-                                </button>
-                                <button onClick={() => setActiveTab('idles')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 " + (activeTab === 'idles' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                    ⏱ Leerzeiten {allIdlesSummary.length > 0 && <span className="bg-red-100 text-red-700 px-1.5 rounded-full text-[10px] font-black">{allIdlesSummary.length}</span>}
-                                </button>
-                                <button onClick={() => setActiveTab('sla')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'sla' ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                    ⚠️ SLA &amp; Pickups
-                                </button>
-                                <button onClick={() => setActiveTab('performance')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'performance' ? 'bg-slate-800 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                    📊 KPIs
-                                </button>
-                                <button onClick={() => setActiveTab('gps')} className={"py-1.5 px-3.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'gps' ? 'bg-teal-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
-                                    📍 GPS-Kontrolle
-                                </button>
+
+                                {(!isForecastMode || showEveningTabs) && (
+                                    <>
+                                        <button onClick={() => setActiveTab('google_hub')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 " + (activeTab === 'google_hub' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            🧭 SLA-Routen
+                                        </button>
+                                        <button onClick={() => setActiveTab('idles')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 " + (activeTab === 'idles' ? 'bg-red-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            ⏱ Leerzeiten {allIdlesSummary.length > 0 && <span className="bg-red-100 text-red-700 px-1.5 rounded-full text-[10px] font-black">{allIdlesSummary.length}</span>}
+                                        </button>
+                                        <button onClick={() => setActiveTab('sla')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'sla' ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            ⚠️ SLA &amp; Pickups
+                                        </button>
+                                        <button onClick={() => setActiveTab('performance')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'performance' ? 'bg-slate-800 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            📊 KPIs
+                                        </button>
+                                        <button onClick={() => setActiveTab('gps')} className={"py-1.5 px-3 rounded-lg text-xs font-bold transition-all whitespace-nowrap " + (activeTab === 'gps' ? 'bg-teal-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100')}>
+                                            📍 GPS-Kontrolle
+                                        </button>
+                                    </>
+                                )}
+                                {isForecastMode && (
+                                    <button
+                                        onClick={() => setShowEveningTabs(!showEveningTabs)}
+                                        className="py-1 px-2.5 rounded-lg text-[11px] font-bold text-gray-500 hover:text-gray-800 hover:bg-gray-100 border border-dashed border-gray-300 whitespace-nowrap ml-1"
+                                        title="Abend-Auswertungen (Leerzeiten, GPS-Kontrolle, Pickups) ein-/ausblenden"
+                                    >
+                                        {showEveningTabs ? '‹ Abend-Tabs ausblenden' : '🌙 Abend-Analyse (+5)'}
+                                    </button>
+                                )}
                             </div>
 
                             {/* Quick Global Departure Time & Export */}
@@ -2817,11 +3057,125 @@
                                 <button
                                     onClick={handleExportAllDispositionCSV}
                                     className="bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold px-2.5 py-1 rounded-md shadow-sm"
-                                    title="Kompletten Tourenplan als CSV für Excel herunterladen"
+                                    title="Kompletten Tourenplan inkl. Umverfügungen als CSV für Excel herunterladen"
                                 >
                                     📥 Tourenplan CSV
                                 </button>
                             </div>
+                        </div>
+                    )}
+
+                    {/* 2b. 06:30 EXCEPTION FOCUS PANEL: Kritische 09:00 Express & SLA-Konflikte */}
+                    {data.length > 0 && isForecastMode && criticalMorningStops.length > 0 && (activeTab === 'map' || activeTab === 'disposition') && (
+                        <div className="shrink-0 bg-gradient-to-r from-red-950 via-[#2a1215] to-slate-900 text-white px-3.5 py-2 rounded-xl shadow-md border border-red-500/40 mb-2">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-2">
+                                    <span className="bg-red-600 text-white text-[10px] font-black px-2 py-0.5 rounded uppercase tracking-wider">
+                                        🚨 06:30 Fokus-Cockpit
+                                    </span>
+                                    <span className="text-xs font-black text-amber-300">
+                                        {criticalMorningStops.filter(s => s.is0900).length}× 09:00 Uhr Express
+                                    </span>
+                                    <span className="text-slate-400">•</span>
+                                    <span className={"text-xs font-black " + (totalSlaRisks > 0 ? "text-red-400" : "text-emerald-400")}>
+                                        {totalSlaRisks > 0 ? `⚠️ ${totalSlaRisks} drohende SLA-Verspätungen` : '✓ Alle ETAs im Zeitfenster'}
+                                    </span>
+                                    {beltRedirections.length > 0 && (
+                                        <>
+                                            <span className="text-slate-400">•</span>
+                                            <span
+                                                onClick={() => setShowBeltSheetModal(true)}
+                                                className="text-xs font-bold text-indigo-300 underline cursor-pointer hover:text-white"
+                                            >
+                                                🔀 {beltRedirections.length} Band-Umverfügungen (für 06:45 Sortierband)
+                                            </span>
+                                        </>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    {totalSlaRisks > 0 && (
+                                        <button
+                                            onClick={handleResolveSlaConflictsWithSpringer}
+                                            className="bg-red-600 hover:bg-red-500 text-white text-[11px] font-black px-2.5 py-1 rounded-lg shadow"
+                                        >
+                                            🚑 Alle {totalSlaRisks} Konflikte automatisch lösen
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => setShowBeltSheetModal(true)}
+                                        className="bg-[#FFB500] hover:bg-yellow-400 text-[#1e1410] text-[11px] font-black px-2.5 py-1 rounded-lg shadow"
+                                    >
+                                        📋 06:45 Band-Zettel öffnen
+                                    </button>
+                                    <button
+                                        onClick={() => setShowCriticalPanel(!showCriticalPanel)}
+                                        className="text-[11px] font-bold text-slate-300 hover:text-white bg-white/10 px-2 py-0.5 rounded"
+                                    >
+                                        {showCriticalPanel ? '▲ Einklappen' : `▼ Zeige ${criticalMorningStops.length} Fokus-Stopps`}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {showCriticalPanel && (
+                                <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2 max-h-[135px] overflow-y-auto custom-scrollbar pr-1 pt-1 border-t border-white/10">
+                                    {criticalMorningStops.map((st) => (
+                                        <div
+                                            key={`${st.currentTour}_${st.key}`}
+                                            className={"p-2 rounded-lg border flex items-center justify-between gap-2 text-[11px] " + (st.isConflict ? "bg-red-950/90 border-red-500" : "bg-white/10 border-white/15")}
+                                        >
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    <span className={"px-1.5 py-0.2 rounded text-[10px] font-black " + (st.commit === '09:00' ? "bg-red-600 text-white" : st.commit === '10:30' ? "bg-purple-600 text-white" : "bg-orange-500 text-white")}>
+                                                        {st.commit}
+                                                    </span>
+                                                    <span className="font-black text-amber-300">{st.currentTour}</span>
+                                                    {st.histPrimaryTour && st.histPrimaryTour !== st.currentTour && (
+                                                        <span className="text-[9px] bg-indigo-600/80 text-white px-1 rounded font-bold">aus {st.histPrimaryTour}</span>
+                                                    )}
+                                                    <span className={"font-black text-[10px] " + (st.isConflict ? "text-red-300 underline" : "text-emerald-300")}>
+                                                        ETA {st.etaStr} ({st.bufferMins >= 0 ? `+${st.bufferMins}m` : `${st.bufferMins}m`})
+                                                    </span>
+                                                </div>
+                                                <div className="font-bold text-white truncate mt-0.5" title={st.recipient}>{st.recipient || st.street}</div>
+                                                <div className="text-[10px] text-slate-300 truncate">{st.postalCode} {st.city}, {st.street}</div>
+                                            </div>
+                                            <div className="flex flex-col gap-1 shrink-0 items-end">
+                                                <div className="flex items-center gap-1">
+                                                    <button
+                                                        onClick={() => {
+                                                            setActiveTab('map');
+                                                            if (!selectedTours.includes(st.currentTour)) setSelectedTours(prev => [...prev, st.currentTour]);
+                                                            setHighlightIdle({ tour: st.currentTour, fromSeq: st.seq, toSeq: st.seq });
+                                                        }}
+                                                        className="bg-white/15 hover:bg-white/25 text-white px-1.5 py-0.5 rounded text-[9px] font-bold"
+                                                        title="Auf Karte zentrieren"
+                                                    >
+                                                        📍 Karte
+                                                    </button>
+                                                    {st.histAltTour && st.histAltTour !== st.currentTour && (
+                                                        <button
+                                                            onClick={() => handleAssignStopOrPlz(st.rows[0], st.histAltTour, 'stop')}
+                                                            className="bg-amber-400 hover:bg-amber-300 text-[#1e1410] px-1.5 py-0.5 rounded text-[9px] font-black"
+                                                            title={`An Nachbar-Tour ${st.histAltTour} übergeben`}
+                                                        >
+                                                            ↪ {st.histAltTour}
+                                                        </button>
+                                                    )}
+                                                    {st.springerTour && st.springerTour !== st.currentTour && (
+                                                        <button
+                                                            onClick={() => handleAssignStopOrPlz(st.rows[0], st.springerTour, 'stop')}
+                                                            className="bg-indigo-500 hover:bg-indigo-400 text-white px-1.5 py-0.5 rounded text-[9px] font-black"
+                                                            title={`An Express-Springer ${st.springerTour} übergeben`}
+                                                        >
+                                                            ⚡ {st.springerTour}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -2834,71 +3188,41 @@
                                     {/* Left Disposition & Tour Control Dock */}
                                     <div className={`flex flex-col gap-2.5 shrink-0 w-full lg:w-[370px] h-full ${isMapExpanded ? "hidden" : "flex"}`}>
                                         {/* Schnell-Disposition Box */}
-                                        <div className="bg-white p-3 rounded-xl shadow-sm border-2 border-amber-300 shrink-0 space-y-2.5">
-                                            <div className="flex items-center justify-between border-b border-amber-100 pb-2">
+                                        <div className="bg-white p-3 rounded-xl shadow-sm border-2 border-amber-300 shrink-0 space-y-2">
+                                            <div className="flex items-center justify-between border-b border-amber-100 pb-1.5">
                                                 <div className="flex items-center gap-1.5">
-                                                    <span className="bg-[#FFB500] text-[#1e1410] font-black text-xs px-2 py-0.5 rounded">⚡ LIVE-DISPO</span>
-                                                    <span className="text-xs font-black text-[#351C15]">Schnell-Verteilung</span>
+                                                    <span className="bg-[#FFB500] text-[#1e1410] font-black text-[11px] px-2 py-0.5 rounded">06:30 DISPO</span>
+                                                    <span className="text-xs font-black text-[#351C15]">S01–S42 &amp; Springer</span>
                                                 </div>
-                                                {unassignedCount > 0 ? (
-                                                    <span className="text-[11px] font-black text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
-                                                        {unassignedCount} offen
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-[11px] font-black text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                                                        ✓ Alle verteilt
-                                                    </span>
-                                                )}
+                                                <button
+                                                    onClick={() => setShowBeltSheetModal(true)}
+                                                    className="text-[11px] font-black text-indigo-800 bg-indigo-100 hover:bg-indigo-200 px-2 py-0.5 rounded-full"
+                                                >
+                                                    🔀 {beltRedirections.length} Band-Umverf.
+                                                </button>
                                             </div>
 
-                                            {/* Smart Auto-Clustering Controls */}
-                                            <div className="bg-slate-50 p-2 rounded-lg border border-slate-200 space-y-1.5">
+                                            {/* Clean S-Tour & Conflict Actions (without K-Means/Corridor clutter) */}
+                                            <div className="flex gap-1.5">
                                                 <button
                                                     onClick={() => handleRunAutoDisposition('stours')}
-                                                    className="w-full bg-[#351C15] hover:bg-black text-[#FFB500] text-[11px] font-black px-3 py-1.5 rounded-lg shadow-sm flex items-center justify-center gap-1.5"
-                                                    title="Verteilt alle Sendungen anhand der realen Oktober-Historie (ups_dispo.db) auf die echten Touren S01–S42 inkl. Fahrer"
+                                                    className="flex-1 bg-[#351C15] hover:bg-black text-[#FFB500] text-[11px] font-black px-2.5 py-1.5 rounded-lg shadow-sm flex items-center justify-center gap-1"
+                                                    title="Setzt alle Sendungen zurück auf ihre historische Stamm-Tour S01–S42 (Oktober-ZIV)"
                                                 >
-                                                    🏭 S-Touren S01–S42 (Oktober-ZIV)
+                                                    🏭 Stamm-Touren (S01–S42)
                                                 </button>
-                                                <div className="flex items-center justify-between gap-1 pt-0.5">
-                                                    <button
-                                                        onClick={() => handleRunAutoDisposition('corridors', autoClusterCount)}
-                                                        className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[10px] font-bold px-2 py-1 rounded flex-1"
-                                                        title="Verteilt in 8 grobe Regional-Korridore (T-01..T-08)"
-                                                    >
-                                                        8 Korridore
-                                                    </button>
-                                                    <div className="flex items-center bg-white border border-slate-300 rounded overflow-hidden">
-                                                        <input
-                                                            type="number"
-                                                            min="2"
-                                                            max="25"
-                                                            value={autoClusterCount}
-                                                            onChange={(e) => setAutoClusterCount(Number(e.target.value))}
-                                                            className="w-8 text-center text-[10px] font-black py-0.5 outline-none"
-                                                            title="Anzahl Touren für GPS K-Means Clustering"
-                                                        />
-                                                        <button
-                                                            onClick={() => handleRunAutoDisposition('kmeans', autoClusterCount)}
-                                                            className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold px-2 py-1"
-                                                            title="Teilt alle offenen Stopps per GPS-K-Means in exakt N Touren"
-                                                        >
-                                                            K-Means
-                                                        </button>
-                                                    </div>
-                                                </div>
                                                 {totalSlaRisks > 0 && (
                                                     <button
                                                         onClick={handleResolveSlaConflictsWithSpringer}
-                                                        className="w-full bg-red-600 hover:bg-red-700 text-white text-[10px] font-black px-2.5 py-1.5 rounded-lg shadow-sm flex items-center justify-center gap-1"
+                                                        className="flex-1 bg-red-600 hover:bg-red-700 text-white text-[11px] font-black px-2 py-1.5 rounded-lg shadow-sm flex items-center justify-center gap-1"
                                                     >
-                                                        🚑 {totalSlaRisks} SLA-Konflikte → Springer (S1H–S4H) / Nachbar
+                                                        🚑 {totalSlaRisks} Konflikte lösen
                                                     </button>
                                                 )}
                                             </div>
 
                                             {/* Click-on-Map Assignment Selector */}
-                                            <div className="space-y-1.5">
+                                            <div className="space-y-1.5 pt-1 border-t border-slate-100">
                                                 <div className="flex items-center justify-between">
                                                     <label className="text-[11px] font-bold text-gray-700">🎯 Klick-Zuweisung auf Karte:</label>
                                                     <div className="flex rounded-md border border-gray-300 overflow-hidden text-[10px] font-bold">
@@ -2930,27 +3254,23 @@
                                                         className="flex-1 border border-gray-300 rounded-lg px-2 py-1 text-xs font-bold bg-white text-gray-800"
                                                     >
                                                         <option value="">-- Ziel-Tour für Klick wählen --</option>
-                                                        {tours.filter(t => t !== 'Prognosen (Vorladung)').map(t => (
+                                                        {['S1H', 'S2H', 'S3H', 'S4H', ...tours.filter(t => t !== 'Prognosen (Vorladung)' && !['S1H', 'S2H', 'S3H', 'S4H'].includes(t))].map(t => (
                                                             <option key={t} value={t}>🎯 Ziel: {t}</option>
                                                         ))}
-                                                        <option value="Prognosen (Vorladung)">↺ Zurück in Pool (Offen)</option>
                                                     </select>
-                                                </div>
-
-                                                <div className="flex gap-1.5 pt-1">
                                                     <input
                                                         type="text"
                                                         value={newTourInput}
                                                         onChange={(e) => setNewTourInput(e.target.value)}
                                                         onKeyDown={(e) => e.key === 'Enter' && handleCreateNewTour()}
-                                                        placeholder="Neue Tour (z.B. S1H, S2H, S12...)"
-                                                        className="flex-1 border border-gray-300 rounded-lg px-2.5 py-1 text-xs bg-gray-50 focus:bg-white outline-none"
+                                                        placeholder="+ Tour (z.B. S1H)"
+                                                        className="w-28 border border-gray-300 rounded-lg px-2 py-1 text-xs bg-gray-50 focus:bg-white outline-none"
                                                     />
                                                     <button
                                                         onClick={() => handleCreateNewTour()}
-                                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-3 py-1 rounded-lg shadow-sm whitespace-nowrap"
+                                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-2.5 py-1 rounded-lg shadow-sm"
                                                     >
-                                                        + Tour
+                                                        +
                                                     </button>
                                                 </div>
                                             </div>
@@ -2958,8 +3278,17 @@
 
                                         {/* Tour Cards List with SLA Status & Actions */}
                                         <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-200 flex flex-col flex-1 min-h-0">
-                                            <div className="flex justify-between items-center mb-2 border-b pb-1.5 shrink-0">
-                                                <label className="text-xs font-black text-gray-700 uppercase tracking-wider">Touren ({dispositionTourBoard.length})</label>
+                                            <div className="flex justify-between items-center mb-1.5 border-b pb-1.5 shrink-0 gap-1">
+                                                <div className="flex items-center gap-1.5">
+                                                    <label className="text-xs font-black text-gray-700 uppercase tracking-wider">Touren ({dispositionTourBoard.length})</label>
+                                                    <button
+                                                        onClick={() => setOnlyProblemToursFilter(!onlyProblemToursFilter)}
+                                                        className={"text-[10px] font-black px-2 py-0.5 rounded-full border transition-colors " + (onlyProblemToursFilter ? "bg-red-600 text-white border-red-700" : "bg-gray-100 text-gray-700 border-gray-300 hover:bg-red-50")}
+                                                        title="Zeigt nur Touren mit 09:00 Express, SLA-Konflikten oder Express-Springer"
+                                                    >
+                                                        {onlyProblemToursFilter ? '🔴 Fokus aktiv' : '🔴 Nur Fokus'}
+                                                    </button>
+                                                </div>
                                                 <div className="flex items-center gap-2">
                                                     <button onClick={() => setSelectedTours(tours)} className="text-[11px] font-bold text-emerald-700 hover:underline">Alle an</button>
                                                     <span className="text-gray-300">|</span>
@@ -2967,72 +3296,75 @@
                                                 </div>
                                             </div>
                                             <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-2">
-                                                {dispositionTourBoard.map((tb) => {
-                                                    const isSelected = selectedTours.includes(tb.tour);
-                                                    const isTarget = activeAssignTour === tb.tour;
-                                                    return (
-                                                        <div
-                                                            key={tb.tour}
-                                                            className={"p-2.5 rounded-xl border transition-all shrink-0 " + (isTarget ? 'ring-2 ring-blue-500 bg-blue-50/40 border-blue-300' : isSelected ? 'bg-slate-50 border-slate-300 shadow-sm' : 'bg-white border-gray-200 opacity-65 hover:opacity-100')}
-                                                        >
-                                                            <div className="flex items-center justify-between gap-1.5 mb-1">
-                                                                <div className="flex items-center gap-2 cursor-pointer flex-1 min-w-0" onClick={() => toggleTourSelection(tb.tour)}>
-                                                                    <input type="checkbox" checked={isSelected} readOnly className="rounded text-blue-600 pointer-events-none" />
-                                                                    <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
-                                                                    <div className="min-w-0 flex-1">
-                                                                        <div className="flex items-center gap-1.5">
-                                                                            <span className="font-black text-xs text-gray-900 truncate" title={tb.tour}>{tb.tour}</span>
-                                                                            {tb.areaName && <span className="text-[10px] font-bold text-slate-600 bg-slate-200/80 px-1.5 rounded truncate">{tb.areaName}</span>}
+                                                {dispositionTourBoard
+                                                    .filter(tb => !onlyProblemToursFilter || tb.isPool || tb.slaConflicts > 0 || tb.isSpringer || tb.count0900 > 0 || tb.redirectedStops > 0)
+                                                    .map((tb) => {
+                                                        const isSelected = selectedTours.includes(tb.tour);
+                                                        const isTarget = activeAssignTour === tb.tour;
+                                                        return (
+                                                            <div
+                                                                key={tb.tour}
+                                                                className={"p-2.5 rounded-xl border transition-all shrink-0 " + (isTarget ? 'ring-2 ring-blue-500 bg-blue-50/40 border-blue-300' : tb.slaConflicts > 0 ? 'bg-red-50/40 border-red-300 shadow-sm' : isSelected ? 'bg-slate-50 border-slate-300 shadow-sm' : 'bg-white border-gray-200 opacity-65 hover:opacity-100')}
+                                                            >
+                                                                <div className="flex items-center justify-between gap-1.5 mb-1">
+                                                                    <div className="flex items-center gap-2 cursor-pointer flex-1 min-w-0" onClick={() => toggleTourSelection(tb.tour)}>
+                                                                        <input type="checkbox" checked={isSelected} readOnly className="rounded text-blue-600 pointer-events-none" />
+                                                                        <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
+                                                                        <div className="min-w-0 flex-1">
+                                                                            <div className="flex items-center gap-1.5">
+                                                                                <span className="font-black text-xs text-gray-900 truncate" title={tb.tour}>{tb.tour}</span>
+                                                                                {tb.areaName && <span className="text-[10px] font-bold text-slate-600 bg-slate-200/80 px-1.5 rounded truncate">{tb.areaName}</span>}
+                                                                                {tb.redirectedStops > 0 && <span className="text-[9px] font-black bg-indigo-100 text-indigo-800 px-1 rounded">🔀 {tb.redirectedStops}</span>}
+                                                                            </div>
+                                                                            {tb.driverName && <div className="text-[10px] text-gray-500 font-semibold truncate">👤 {tb.driverName}</div>}
                                                                         </div>
-                                                                        {tb.driverName && <div className="text-[10px] text-gray-500 font-semibold truncate">👤 {tb.driverName}</div>}
                                                                     </div>
-                                                                </div>
-                                                                <div className="flex items-center gap-1 shrink-0">
-                                                                    {!tb.isPool && (
-                                                                        <button
-                                                                            onClick={() => {
-                                                                                setActiveAssignTour(tb.tour);
-                                                                                if (clickAssignScope === 'off') setClickAssignScope('stop');
-                                                                                showToast(`🎯 Klick-Zuweisung aktiv für: ${tb.tour}`);
-                                                                            }}
-                                                                            className={"px-2 py-0.5 rounded text-[10px] font-black border " + (isTarget ? "bg-blue-600 text-white border-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50")}
-                                                                            title="Auf Karte klicken, um Stopps dieser Tour zuzuweisen"
-                                                                        >
-                                                                            {isTarget ? '🎯 Aktiv' : '🎯 Ziel'}
-                                                                        </button>
-                                                                    )}
-                                                                    <button
-                                                                        onClick={() => setManifestModalTour(tb.tour)}
-                                                                        className="px-1.5 py-0.5 rounded bg-slate-800 text-white text-[10px] font-bold hover:bg-black"
-                                                                        title="Fahrer-Manifest & Stopp-Liste öffnen"
-                                                                    >
-                                                                        📋 {tb.totalStops} Stp
-                                                                    </button>
-                                                                </div>
-                                                            </div>
-
-                                                            {/* SLA Pills & Metrics */}
-                                                            <div className="flex items-center justify-between text-[10px] font-bold gap-1 flex-wrap">
-                                                                <div className="flex items-center gap-1">
-                                                                    {tb.count0900 > 0 && <span className="px-1.5 py-0.2 rounded bg-red-100 text-red-800 border border-red-300">09:00×{tb.count0900}</span>}
-                                                                    {tb.count1030 > 0 && <span className="px-1.5 py-0.2 rounded bg-purple-100 text-purple-800 border border-purple-300">10:30×{tb.count1030}</span>}
-                                                                    {tb.count1200 > 0 && <span className="px-1.5 py-0.2 rounded bg-orange-100 text-orange-800 border border-orange-300">12:00×{tb.count1200}</span>}
-                                                                    {tb.countEod > 0 && <span className="px-1.5 py-0.2 rounded bg-gray-100 text-gray-700">EOD×{tb.countEod}</span>}
-                                                                </div>
-                                                                {!tb.isPool && (
-                                                                    <div className="flex items-center gap-1.5">
-                                                                        <span className="text-gray-500">~{tb.totalKm}km</span>
-                                                                        {tb.slaConflicts > 0 ? (
-                                                                            <span className="text-red-700 bg-red-100 px-1.5 rounded font-black" title="Drohende SLA-Überschreitung!">⚠️ {tb.slaConflicts} SLA</span>
-                                                                        ) : (
-                                                                            <span className="text-emerald-700 bg-emerald-100 px-1.5 rounded font-black">✓ SLA OK (Ende {tb.finishStr})</span>
+                                                                    <div className="flex items-center gap-1 shrink-0">
+                                                                        {!tb.isPool && (
+                                                                            <button
+                                                                                onClick={() => {
+                                                                                    setActiveAssignTour(tb.tour);
+                                                                                    if (clickAssignScope === 'off') setClickAssignScope('stop');
+                                                                                    showToast(`🎯 Klick-Zuweisung aktiv für: ${tb.tour}`);
+                                                                                }}
+                                                                                className={"px-2 py-0.5 rounded text-[10px] font-black border " + (isTarget ? "bg-blue-600 text-white border-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50")}
+                                                                                title="Auf Karte klicken, um Stopps dieser Tour zuzuweisen"
+                                                                            >
+                                                                                {isTarget ? '🎯 Aktiv' : '🎯 Ziel'}
+                                                                            </button>
                                                                         )}
+                                                                        <button
+                                                                            onClick={() => setManifestModalTour(tb.tour)}
+                                                                            className="px-1.5 py-0.5 rounded bg-slate-800 text-white text-[10px] font-bold hover:bg-black"
+                                                                            title="Fahrer-Manifest & Stopp-Liste öffnen"
+                                                                        >
+                                                                            📋 {tb.totalStops} Stp
+                                                                        </button>
                                                                     </div>
-                                                                )}
+                                                                </div>
+
+                                                                {/* SLA Pills & Metrics */}
+                                                                <div className="flex items-center justify-between text-[10px] font-bold gap-1 flex-wrap">
+                                                                    <div className="flex items-center gap-1">
+                                                                        {tb.count0900 > 0 && <span className="px-1.5 py-0.2 rounded bg-red-100 text-red-800 border border-red-300">09:00×{tb.count0900}</span>}
+                                                                        {tb.count1030 > 0 && <span className="px-1.5 py-0.2 rounded bg-purple-100 text-purple-800 border border-purple-300">10:30×{tb.count1030}</span>}
+                                                                        {tb.count1200 > 0 && <span className="px-1.5 py-0.2 rounded bg-orange-100 text-orange-800 border border-orange-300">12:00×{tb.count1200}</span>}
+                                                                        {tb.countEod > 0 && <span className="px-1.5 py-0.2 rounded bg-gray-100 text-gray-700">EOD×{tb.countEod}</span>}
+                                                                    </div>
+                                                                    {!tb.isPool && (
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <span className="text-gray-500">~{tb.totalKm}km</span>
+                                                                            {tb.slaConflicts > 0 ? (
+                                                                                <span className="text-red-700 bg-red-100 px-1.5 rounded font-black" title="Drohende SLA-Überschreitung!">⚠️ {tb.slaConflicts} SLA</span>
+                                                                            ) : (
+                                                                                <span className="text-emerald-700 bg-emerald-100 px-1.5 rounded font-black">✓ SLA OK ({tb.finishStr})</span>
+                                                                            )}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    );
-                                                })}
+                                                        );
+                                                    })}
                                             </div>
                                         </div>
                                     </div>
@@ -3110,70 +3442,53 @@
                                     </div>
                                 </div>
 
-                                {/* Tab: MORNING EXPRESS DISPOSITION BOARD (Kanban & Auto-Cluster Workstation) */}
+                                {/* Tab: MORNING EXPRESS DISPOSITION BOARD (06:30 - 06:45 Dispo Cockpit) */}
                                 <div className={`h-full overflow-y-auto custom-scrollbar pb-10 pr-1 ${activeTab === 'disposition' ? 'block' : 'hidden'}`}>
                                     <div className="space-y-4">
                                         {/* Top Control Bar of Disposition Board */}
                                         <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
                                             <div>
                                                 <h2 className="text-lg font-black text-[#351C15] flex items-center gap-2">
-                                                    ⚡ Morgen-Disposition: Reale S-Touren (S01–S42) &amp; Express-Springer (S1H–S4H)
+                                                    ⚡ 06:30–06:45 Morgen-Disposition: Reale S-Touren (S01–S42) &amp; Express-Springer (S1H–S4H)
                                                 </h2>
                                                 <p className="text-xs text-gray-500 mt-0.5">
-                                                    Basiert auf <b>92.922 realen Oktober-Stopps (ups_dispo.db)</b>: Straßen- &amp; PLZ-genaue Zuweisung auf Ihre echten Touren <b>S01–S42</b> inkl. Stammfahrer, Gebietsnamen und 1-Klick SLA-Konfliktlösung über Nachbar-Touren oder Express-Springer (<b>S1H–S4H</b>).
+                                                    Alle Pakete sind automatisch ihren <b>Stamm-Touren S01–S42</b> zugewiesen. Risiko-Touren &amp; <b>09:00 Express</b> stehen ganz oben. Jede Änderung wird automatisch für die <b>06:45 Band-Anweisung</b> erfasst.
                                                 </p>
                                             </div>
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <button
-                                                    onClick={() => handleRunAutoDisposition('stours')}
-                                                    className="bg-[#FFB500] hover:bg-yellow-500 text-[#1e1410] font-black text-xs px-4 py-2 rounded-lg shadow-sm flex items-center gap-1.5"
-                                                    title="Verteilt alle Sendungen straßen- und PLZ-genau auf die echten S01–S42 Touren"
+                                                    onClick={() => setOnlyProblemToursFilter(!onlyProblemToursFilter)}
+                                                    className={"font-black text-xs px-3.5 py-2 rounded-lg border transition-colors flex items-center gap-1.5 " + (onlyProblemToursFilter ? "bg-red-600 text-white border-red-700 shadow-sm" : "bg-red-50 text-red-900 border-red-200 hover:bg-red-100")}
                                                 >
-                                                    🏭 S-Touren Auto-Dispo (S01–S42 ZIV)
+                                                    {onlyProblemToursFilter ? '🔴 Zeige alle Touren' : '🔴 Nur Risiko / 09:00 / Springer'}
+                                                </button>
+                                                <button
+                                                    onClick={() => setShowBeltSheetModal(true)}
+                                                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs px-4 py-2 rounded-lg shadow-sm flex items-center gap-1.5"
+                                                >
+                                                    📋 06:45 Band-Anweisung &amp; Springer ({beltRedirections.length})
                                                 </button>
                                                 {totalSlaRisks > 0 && (
                                                     <button
                                                         onClick={handleResolveSlaConflictsWithSpringer}
                                                         className="bg-red-600 hover:bg-red-700 text-white font-black text-xs px-3.5 py-2 rounded-lg shadow-sm flex items-center gap-1.5 animate-pulse"
                                                     >
-                                                        🚑 {totalSlaRisks} SLA-Konflikte lösen (Springer / Nachbar)
+                                                        🚑 {totalSlaRisks} SLA-Konflikte lösen
                                                     </button>
                                                 )}
-                                                <button
-                                                    onClick={() => handleRunAutoDisposition('corridors', autoClusterCount)}
-                                                    className="bg-slate-800 hover:bg-black text-white font-bold text-xs px-3 py-2 rounded-lg shadow-sm"
-                                                >
-                                                    8 Regionen (T-01..08)
-                                                </button>
-                                                <div className="flex items-center bg-slate-100 rounded-lg p-1 border border-slate-300">
-                                                    <span className="text-[11px] font-bold text-slate-700 px-2">K-Means:</span>
-                                                    <input
-                                                        type="number"
-                                                        min="2"
-                                                        max="25"
-                                                        value={autoClusterCount}
-                                                        onChange={(e) => setAutoClusterCount(Number(e.target.value))}
-                                                        className="w-11 border border-slate-300 rounded px-1.5 py-1 text-xs font-black text-center bg-white"
-                                                    />
-                                                    <button
-                                                        onClick={() => handleRunAutoDisposition('kmeans', autoClusterCount)}
-                                                        className="ml-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-2.5 py-1 rounded-md"
-                                                    >
-                                                        Teilen
-                                                    </button>
-                                                </div>
                                                 <button
                                                     onClick={handleOptimizeAllTours}
                                                     className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-2 rounded-lg shadow-sm"
                                                     title="Sortiert alle Touren optimal nach 09:00 → 10:30 → 12:00 und kürzester Fahrstrecke"
                                                 >
-                                                    🧭 Alle SLA-optimieren
+                                                    🧭 Alle Bestweg-sortieren
                                                 </button>
                                                 <button
-                                                    onClick={handleResetAllToPool}
-                                                    className="bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-700 border border-gray-300 font-bold text-xs px-3 py-2 rounded-lg"
+                                                    onClick={() => handleRunAutoDisposition('stours')}
+                                                    className="bg-gray-100 hover:bg-amber-100 text-gray-800 border border-gray-300 font-bold text-xs px-3 py-2 rounded-lg"
+                                                    title="Alle Umverfügungen zurücksetzen auf originale Stamm-Touren S01–S42"
                                                 >
-                                                    ↺ Reset Pool
+                                                    ↺ Auf Stamm-Touren (S01–S42) zurücksetzen
                                                 </button>
                                             </div>
                                         </div>
@@ -3182,7 +3497,7 @@
                                         <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                                             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-3">
                                                 <div className="text-xs font-black text-gray-800 uppercase tracking-wider flex items-center gap-2">
-                                                    📮 Schnellzuweisung nach Postleitzahl (PLZ-Cluster → Ziel-Tour)
+                                                    📮 Schnellzuweisung nach Postleitzahl (Ganze PLZ → Ziel-Tour / Springer)
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <span className="text-xs font-bold text-gray-600">Aktive Ziel-Tour:</span>
@@ -3192,7 +3507,7 @@
                                                         className="border-2 border-blue-500 rounded-lg px-2.5 py-1 text-xs font-black bg-blue-50 text-blue-900"
                                                     >
                                                         <option value="">-- Ziel-Tour wählen --</option>
-                                                        {tours.filter(t => t !== 'Prognosen (Vorladung)').map(t => (
+                                                        {['S1H', 'S2H', 'S3H', 'S4H', ...tours.filter(t => t !== 'Prognosen (Vorladung)' && !['S1H', 'S2H', 'S3H', 'S4H'].includes(t))].map(t => (
                                                             <option key={t} value={t}>{t}</option>
                                                         ))}
                                                     </select>
@@ -3238,197 +3553,202 @@
 
                                         {/* Kanban Tour Cards Grid */}
                                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-                                            {dispositionTourBoard.map((tb) => (
-                                                <div
-                                                    key={tb.tour}
-                                                    className={"bg-white rounded-xl shadow-sm border-2 flex flex-col overflow-hidden " + (tb.isPool ? "border-amber-400" : tb.slaConflicts > 0 ? "border-red-300" : tb.isSpringer ? "border-indigo-300" : "border-gray-200")}
-                                                >
-                                                    {/* Card Header */}
-                                                    <div className="p-3 border-b flex justify-between items-start gap-2" style={{ backgroundColor: tb.isPool ? '#fffbeb' : tb.isSpringer ? '#eef2ff' : '#f8fafc', borderTop: `4px solid ${tb.color}` }}>
-                                                        <div className="min-w-0 flex-1">
-                                                            <div className="flex items-center gap-1.5 flex-wrap">
-                                                                <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
-                                                                <h3 className="font-black text-sm text-gray-900 truncate" title={tb.tour}>{tb.tour}</h3>
-                                                                {tb.areaName && (
-                                                                    <span className="text-[10px] font-bold bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded truncate max-w-[140px]" title={tb.areaName}>
-                                                                        📍 {tb.areaName}
-                                                                    </span>
+                                            {dispositionTourBoard
+                                                .filter(tb => !onlyProblemToursFilter || tb.isPool || tb.slaConflicts > 0 || tb.isSpringer || tb.count0900 > 0 || tb.redirectedStops > 0)
+                                                .map((tb) => (
+                                                    <div
+                                                        key={tb.tour}
+                                                        className={"bg-white rounded-xl shadow-sm border-2 flex flex-col overflow-hidden " + (tb.isPool ? "border-amber-400" : tb.slaConflicts > 0 ? "border-red-400 ring-2 ring-red-200" : tb.isSpringer ? "border-indigo-400" : tb.count0900 > 0 ? "border-amber-300" : "border-gray-200")}
+                                                    >
+                                                        {/* Card Header */}
+                                                        <div className="p-3 border-b flex justify-between items-start gap-2" style={{ backgroundColor: tb.isPool ? '#fffbeb' : tb.slaConflicts > 0 ? '#fef2f2' : tb.isSpringer ? '#eef2ff' : '#f8fafc', borderTop: `4px solid ${tb.color}` }}>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                                    <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tb.color }}></span>
+                                                                    <h3 className="font-black text-sm text-gray-900 truncate" title={tb.tour}>{tb.tour}</h3>
+                                                                    {tb.areaName && (
+                                                                        <span className="text-[10px] font-bold bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded truncate max-w-[130px]" title={tb.areaName}>
+                                                                            📍 {tb.areaName}
+                                                                        </span>
+                                                                    )}
+                                                                    {tb.isSpringer && (
+                                                                        <span className="text-[9px] font-black bg-indigo-600 text-white px-1.5 py-0.5 rounded uppercase">
+                                                                            ⚡ Express-Springer
+                                                                        </span>
+                                                                    )}
+                                                                    {tb.redirectedStops > 0 && (
+                                                                        <span className="text-[9px] font-black bg-amber-200 text-amber-950 px-1.5 py-0.5 rounded" title="Sendungen aus anderen Stamm-Touren übernommen">
+                                                                            🔀 +{tb.redirectedStops} Umverf.
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                {!tb.isPool && (
+                                                                    <div className="mt-1.5 flex items-center gap-1.5">
+                                                                        <input
+                                                                            type="text"
+                                                                            value={tb.driverName}
+                                                                            onChange={(e) => saveTourDriverMeta({ ...tourDriverMeta, [tb.tour]: { ...(tourDriverMeta[tb.tour] || {}), driver: e.target.value } })}
+                                                                            placeholder="👤 Fahrer / Kurier Name..."
+                                                                            className="border border-gray-300 rounded px-2 py-0.5 text-[11px] font-semibold bg-white w-full"
+                                                                        />
+                                                                    </div>
                                                                 )}
-                                                                {tb.isSpringer && (
-                                                                    <span className="text-[9px] font-black bg-indigo-600 text-white px-1.5 py-0.5 rounded uppercase">
-                                                                        Express-Springer
-                                                                    </span>
+                                                                {!tb.isPool && tb.avgFirstStop && (
+                                                                    <div className="mt-1 text-[10px] text-gray-500 font-semibold flex items-center gap-2">
+                                                                        <span>⏱ Okt-1.Stopp: <b>{tb.avgFirstStop}</b></span>
+                                                                        {tb.stopsPerHour > 0 && <span>• Ø <b>{tb.stopsPerHour}</b> Stp/h</span>}
+                                                                    </div>
                                                                 )}
+                                                            </div>
+                                                            <div className="text-right shrink-0">
+                                                                <div className="text-base font-black text-gray-900">{tb.totalStops} <span className="text-[10px] font-bold text-gray-500">Stopps</span></div>
+                                                                <div className="text-[10px] font-bold text-gray-500">{tb.totalPackages} Pakete</div>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* SLA & Route Health Bar */}
+                                                        <div className="px-3 py-2 bg-slate-50 border-b border-gray-200 flex items-center justify-between text-[11px] font-bold flex-wrap gap-1">
+                                                            <div className="flex items-center gap-1">
+                                                                <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800">09:00: {tb.count0900}</span>
+                                                                <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">10:30: {tb.count1030}</span>
+                                                                <span className="px-1.5 py-0.5 rounded bg-orange-100 text-orange-800">12:00: {tb.count1200}</span>
                                                             </div>
                                                             {!tb.isPool && (
-                                                                <div className="mt-1.5 flex items-center gap-1.5">
-                                                                    <input
-                                                                        type="text"
-                                                                        value={tb.driverName}
-                                                                        onChange={(e) => saveTourDriverMeta({ ...tourDriverMeta, [tb.tour]: { ...(tourDriverMeta[tb.tour] || {}), driver: e.target.value } })}
-                                                                        placeholder="👤 Fahrer / Kurier Name..."
-                                                                        className="border border-gray-300 rounded px-2 py-0.5 text-[11px] font-semibold bg-white w-full"
-                                                                    />
-                                                                </div>
-                                                            )}
-                                                            {!tb.isPool && tb.avgFirstStop && (
-                                                                <div className="mt-1 text-[10px] text-gray-500 font-semibold flex items-center gap-2">
-                                                                    <span>⏱ Okt-1.Stopp: <b>{tb.avgFirstStop}</b></span>
-                                                                    {tb.stopsPerHour > 0 && <span>• Ø <b>{tb.stopsPerHour}</b> Stp/h</span>}
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <span className="text-slate-600">🛣️ {tb.totalKm} km</span>
+                                                                    {tb.slaConflicts > 0 ? (
+                                                                        <span className="bg-red-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">⚠️ {tb.slaConflicts} SLA-Konflikt</span>
+                                                                    ) : (
+                                                                        <span className="bg-emerald-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">✓ SLA OK ({tb.finishStr})</span>
+                                                                    )}
                                                                 </div>
                                                             )}
                                                         </div>
-                                                        <div className="text-right shrink-0">
-                                                            <div className="text-base font-black text-gray-900">{tb.totalStops} <span className="text-[10px] font-bold text-gray-500">Stopps</span></div>
-                                                            <div className="text-[10px] font-bold text-gray-500">{tb.totalPackages} Pakete</div>
-                                                        </div>
-                                                    </div>
 
-                                                    {/* SLA & Route Health Bar */}
-                                                    <div className="px-3 py-2 bg-slate-50 border-b border-gray-200 flex items-center justify-between text-[11px] font-bold flex-wrap gap-1">
-                                                        <div className="flex items-center gap-1">
-                                                            <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800">09:00: {tb.count0900}</span>
-                                                            <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">10:30: {tb.count1030}</span>
-                                                            <span className="px-1.5 py-0.5 rounded bg-orange-100 text-orange-800">12:00: {tb.count1200}</span>
-                                                        </div>
-                                                        {!tb.isPool && (
-                                                            <div className="flex items-center gap-1.5">
-                                                                <span className="text-slate-600">🛣️ {tb.totalKm} km</span>
-                                                                {tb.slaConflicts > 0 ? (
-                                                                    <span className="bg-red-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">⚠️ {tb.slaConflicts} SLA-Konflikt</span>
-                                                                ) : (
-                                                                    <span className="bg-emerald-600 text-white px-2 py-0.5 rounded-full text-[10px] font-black">✓ SLA OK ({tb.finishStr})</span>
-                                                                )}
-                                                            </div>
-                                                        )}
-                                                    </div>
-
-                                                    {/* Stop Sequence List inside Card */}
-                                                    <div className="p-2 flex-1 max-h-[340px] overflow-y-auto custom-scrollbar divide-y divide-gray-100">
-                                                        {tb.stopSchedule.map((st) => {
-                                                            const commitColor = st.commit === '09:00' ? 'bg-red-600 text-white' : st.commit === '10:30' ? 'bg-purple-600 text-white' : st.commit === '12:00' ? 'bg-orange-500 text-white' : 'bg-slate-200 text-slate-700';
-                                                            const isConflict = !tb.isPool && st.bufferMins < 0 && st.commit !== 'EOD';
-                                                            return (
-                                                                <div key={st.key} className={"py-2 px-1.5 hover:bg-blue-50/50 transition-colors flex items-start justify-between gap-2 text-xs " + (isConflict ? "bg-red-50/80" : "")}>
-                                                                    <div className="min-w-0 flex-1">
-                                                                        <div className="flex items-center gap-1.5 flex-wrap">
-                                                                            <span className="font-black text-gray-500">#{st.stopIndex}</span>
-                                                                            <span className={`px-1.5 py-0.2 rounded text-[10px] font-black ${commitColor}`}>{st.commit}</span>
-                                                                            {!tb.isPool && (
-                                                                                <span className={"text-[10px] font-black " + (isConflict ? "text-red-600 underline" : "text-emerald-700")}>
-                                                                                    ETA {st.etaStr}
-                                                                                </span>
-                                                                            )}
-                                                                            {st.pkgCount > 1 && <span className="bg-amber-100 text-amber-900 px-1 rounded text-[10px] font-bold">{st.pkgCount} Pkt</span>}
-                                                                            {st.histPrimaryTour && st.histPrimaryTour !== tb.tour && (
-                                                                                <button
-                                                                                    onClick={() => handleAssignStopOrPlz(st.rows[0], st.histPrimaryTour, 'stop')}
-                                                                                    className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-1 rounded text-[9px] font-black"
-                                                                                    title={`Laut Oktober-ZIV gehört diese Adresse zu ${st.histPrimaryTour} (${st.histMatchSource}). Klicken zum Zuweisen.`}
-                                                                                >
-                                                                                    🎯 ZIV: {st.histPrimaryTour}
-                                                                                </button>
-                                                                            )}
-                                                                        </div>
-                                                                        <div className="font-bold text-gray-800 truncate mt-0.5" title={st.recipient}>{st.recipient || st.street}</div>
-                                                                        <div className="text-[11px] text-gray-500 truncate">{st.postalCode} {st.city}, {st.street}</div>
-                                                                        {isConflict && (
-                                                                            <div className="mt-1 flex items-center gap-1 flex-wrap">
-                                                                                {st.histAltTour && st.histAltTour !== tb.tour && (
-                                                                                    <button
-                                                                                        onClick={() => handleAssignStopOrPlz(st.rows[0], st.histAltTour, 'stop')}
-                                                                                        className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded text-[9px] font-black"
-                                                                                        title={`Diesen verspäteten Express-Stopp an Nachbar-Tour ${st.histAltTour} übergeben`}
-                                                                                    >
-                                                                                        ↪ Nachbar {st.histAltTour}
-                                                                                    </button>
+                                                        {/* Stop Sequence List inside Card */}
+                                                        <div className="p-2 flex-1 max-h-[340px] overflow-y-auto custom-scrollbar divide-y divide-gray-100">
+                                                            {tb.stopSchedule.map((st) => {
+                                                                const commitColor = st.commit === '09:00' ? 'bg-red-600 text-white' : st.commit === '10:30' ? 'bg-purple-600 text-white' : st.commit === '12:00' ? 'bg-orange-500 text-white' : 'bg-slate-200 text-slate-700';
+                                                                const isConflict = !tb.isPool && st.bufferMins < 0 && st.commit !== 'EOD';
+                                                                const isRedirected = !tb.isPool && st.histPrimaryTour && st.histPrimaryTour !== tb.tour;
+                                                                return (
+                                                                    <div key={st.key} className={"py-2 px-1.5 hover:bg-blue-50/50 transition-colors flex items-start justify-between gap-2 text-xs " + (isConflict ? "bg-red-50/80" : isRedirected ? "bg-indigo-50/40" : "")}>
+                                                                        <div className="min-w-0 flex-1">
+                                                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                                                                <span className="font-black text-gray-500">#{st.stopIndex}</span>
+                                                                                <span className={`px-1.5 py-0.2 rounded text-[10px] font-black ${commitColor}`}>{st.commit}</span>
+                                                                                {!tb.isPool && (
+                                                                                    <span className={"text-[10px] font-black " + (isConflict ? "text-red-600 underline" : "text-emerald-700")}>
+                                                                                        ETA {st.etaStr}
+                                                                                    </span>
                                                                                 )}
-                                                                                {st.springerTour && st.springerTour !== tb.tour && (
+                                                                                {st.pkgCount > 1 && <span className="bg-amber-100 text-amber-900 px-1 rounded text-[10px] font-bold">{st.pkgCount} Pkt</span>}
+                                                                                {isRedirected && (
                                                                                     <button
-                                                                                        onClick={() => handleAssignStopOrPlz(st.rows[0], st.springerTour, 'stop')}
-                                                                                        className="bg-red-600 hover:bg-red-700 text-white px-1.5 py-0.5 rounded text-[9px] font-black"
-                                                                                        title={`Diesen verspäteten Express-Stopp an Express-Springer ${st.springerTour} übergeben`}
+                                                                                        onClick={() => handleAssignStopOrPlz(st.rows[0], st.histPrimaryTour, 'stop')}
+                                                                                        className="bg-indigo-100 hover:bg-indigo-200 text-indigo-900 border border-indigo-300 px-1.5 py-0.2 rounded text-[9px] font-black"
+                                                                                        title={`Band-Umverfügung: Aus Stamm-Tour ${st.histPrimaryTour} übernommen. Klicken für Rückgabe an ${st.histPrimaryTour}.`}
                                                                                     >
-                                                                                        ⚡ Springer {st.springerTour}
+                                                                                        🔀 aus {st.histPrimaryTour} ↺
                                                                                     </button>
                                                                                 )}
                                                                             </div>
-                                                                        )}
+                                                                            <div className="font-bold text-gray-800 truncate mt-0.5" title={st.recipient}>{st.recipient || st.street}</div>
+                                                                            <div className="text-[11px] text-gray-500 truncate">{st.postalCode} {st.city}, {st.street}</div>
+                                                                            {(isConflict || st.commit === '09:00') && (
+                                                                                <div className="mt-1 flex items-center gap-1 flex-wrap">
+                                                                                    {st.histAltTour && st.histAltTour !== tb.tour && (
+                                                                                        <button
+                                                                                            onClick={() => handleAssignStopOrPlz(st.rows[0], st.histAltTour, 'stop')}
+                                                                                            className="bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded text-[9px] font-black"
+                                                                                            title={`Diesen Express-Stopp an Nachbar-Tour ${st.histAltTour} übergeben`}
+                                                                                        >
+                                                                                            ↪ Nachbar {st.histAltTour}
+                                                                                        </button>
+                                                                                    )}
+                                                                                    {st.springerTour && st.springerTour !== tb.tour && (
+                                                                                        <button
+                                                                                            onClick={() => handleAssignStopOrPlz(st.rows[0], st.springerTour, 'stop')}
+                                                                                            className="bg-indigo-600 hover:bg-indigo-700 text-white px-1.5 py-0.5 rounded text-[9px] font-black"
+                                                                                            title={`Diesen Express-Stopp an Express-Springer ${st.springerTour} übergeben`}
+                                                                                        >
+                                                                                            ⚡ Springer {st.springerTour}
+                                                                                        </button>
+                                                                                    )}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="shrink-0 flex flex-col items-end gap-1">
+                                                                            <select
+                                                                                value={tb.tour}
+                                                                                onChange={(e) => handleAssignStopOrPlz(st.rows[0], e.target.value, 'stop')}
+                                                                                className="border border-gray-300 rounded px-1.5 py-0.5 text-[10px] font-bold bg-white text-gray-700 max-w-[115px]"
+                                                                                title="Diesen Stopp einer anderen Tour zuweisen"
+                                                                            >
+                                                                                {[...new Set([tb.tour, st.histPrimaryTour, st.histAltTour, st.springerTour, 'S1H', 'S2H', 'S3H', 'S4H', ...tours].filter(Boolean))].map(tOpt => (
+                                                                                    <option key={tOpt} value={tOpt}>{tOpt}</option>
+                                                                                ))}
+                                                                            </select>
+                                                                            <button
+                                                                                onClick={() => {
+                                                                                    setActiveTab('map');
+                                                                                    if (!selectedTours.includes(tb.tour)) setSelectedTours(prev => [...prev, tb.tour]);
+                                                                                    setHighlightIdle({ tour: tb.tour, fromSeq: st.seq, toSeq: st.seq });
+                                                                                }}
+                                                                                className="text-[10px] text-blue-600 hover:underline font-bold"
+                                                                            >
+                                                                                📍 Karte
+                                                                            </button>
+                                                                        </div>
                                                                     </div>
-                                                                    <div className="shrink-0 flex flex-col items-end gap-1">
-                                                                        <select
-                                                                            value={tb.tour}
-                                                                            onChange={(e) => handleAssignStopOrPlz(st.rows[0], e.target.value, 'stop')}
-                                                                            className="border border-gray-300 rounded px-1.5 py-0.5 text-[10px] font-bold bg-white text-gray-700 max-w-[115px]"
-                                                                            title="Diesen Stopp einer anderen Tour zuweisen"
-                                                                        >
-                                                                            {[...new Set([...tours, st.histPrimaryTour, st.histAltTour, st.springerTour].filter(Boolean))].map(tOpt => (
-                                                                                <option key={tOpt} value={tOpt}>{tOpt}</option>
-                                                                            ))}
-                                                                        </select>
-                                                                        <button
-                                                                            onClick={() => {
-                                                                                setActiveTab('map');
-                                                                                if (!selectedTours.includes(tb.tour)) setSelectedTours(prev => [...prev, tb.tour]);
-                                                                                setHighlightIdle({ tour: tb.tour, fromSeq: st.seq, toSeq: st.seq });
-                                                                            }}
-                                                                            className="text-[10px] text-blue-600 hover:underline font-bold"
-                                                                        >
-                                                                            📍 Karte
-                                                                        </button>
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
 
-                                                    {/* Card Footer Actions */}
-                                                    <div className="p-2.5 bg-gray-50 border-t border-gray-200 flex items-center justify-between gap-1.5 flex-wrap">
-                                                        {!tb.isPool && (
-                                                            <>
-                                                                <button
-                                                                    onClick={() => handleOptimizeSingleTour(tb.tour)}
-                                                                    className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold shadow-sm"
-                                                                    title="Stopps nach SLA (09:00 → 10:30 → 12:00) und kürzester Strecke sortieren"
-                                                                >
-                                                                    ⚡ Bestweg
-                                                                </button>
-                                                                <button
-                                                                    onClick={() => handleCopyDriverWhatsApp(tb)}
-                                                                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-black text-white rounded-lg text-[11px] font-bold shadow-sm"
-                                                                    title="Manifest + Google Maps Link für WhatsApp kopieren"
-                                                                >
-                                                                    📲 WhatsApp
-                                                                </button>
-                                                                <button
-                                                                    onClick={() => setManifestModalTour(tb.tour)}
-                                                                    className="px-2.5 py-1.5 bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 rounded-lg text-[11px] font-bold"
-                                                                >
-                                                                    🖨️ Manifest
-                                                                </button>
-                                                                {tb.googleNavUrl && (
-                                                                    <a
-                                                                        href={tb.googleNavUrl}
-                                                                        target="_blank"
-                                                                        className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-bold"
-                                                                        title="Tour direkt in Google Maps Navigation öffnen"
+                                                        {/* Card Footer Actions */}
+                                                        <div className="p-2.5 bg-gray-50 border-t border-gray-200 flex items-center justify-between gap-1 flex-wrap">
+                                                            {!tb.isPool && (
+                                                                <>
+                                                                    <button
+                                                                        onClick={() => handleOptimizeSingleTour(tb.tour)}
+                                                                        className="px-2 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold shadow-sm"
+                                                                        title="Stopps nach SLA (09:00 → 10:30 → 12:00) und kürzester Strecke sortieren"
                                                                     >
-                                                                        🧭 Route ↗
-                                                                    </a>
-                                                                )}
-                                                            </>
-                                                        )}
-                                                        {tb.isPool && tb.totalPackages > 0 && (
-                                                            <button
-                                                                onClick={() => handleRunAutoDisposition('stours')}
-                                                                className="w-full py-2 bg-[#FFB500] hover:bg-yellow-500 text-[#1e1410] font-black rounded-lg text-xs shadow-sm"
-                                                            >
-                                                                🏭 Jetzt {tb.totalPackages} offene Sendungen auf S01–S42 verteilen
-                                                            </button>
-                                                        )}
+                                                                        ⚡ Bestweg
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => handleCopyDriverWhatsApp(tb)}
+                                                                        className="px-2 py-1.5 bg-slate-800 hover:bg-black text-white rounded-lg text-[11px] font-bold shadow-sm"
+                                                                        title="Manifest + Google Maps Link für WhatsApp kopieren"
+                                                                    >
+                                                                        📲 WhatsApp
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => setManifestModalTour(tb.tour)}
+                                                                        className="px-2 py-1.5 bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 rounded-lg text-[11px] font-bold"
+                                                                    >
+                                                                        🖨️ Manifest
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => handleDissolveTourToNeighbors(tb.tour)}
+                                                                        className="px-2 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-[11px] font-bold"
+                                                                        title={`Tour ${tb.tour} fällt heute aus: Alle Express-Stopps per 1-Klick auf Nachbar-Touren & Springer verteilen`}
+                                                                    >
+                                                                        🔄 Ausfall
+                                                                    </button>
+                                                                </>
+                                                            )}
+                                                            {tb.isPool && tb.totalPackages > 0 && (
+                                                                <button
+                                                                    onClick={() => handleRunAutoDisposition('stours')}
+                                                                    className="w-full py-2 bg-[#FFB500] hover:bg-yellow-500 text-[#1e1410] font-black rounded-lg text-xs shadow-sm"
+                                                                >
+                                                                    🏭 Jetzt {tb.totalPackages} offene Sendungen auf S01–S42 verteilen
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            ))}
+                                                ))}
                                         </div>
                                     </div>
                                 </div>
@@ -4252,6 +4572,241 @@
                                                 ))}
                                             </tbody>
                                         </table>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
+
+                    {/* Модальное окно 06:45 Band-Anweisung & Express-Springer Zettel */}
+                    {showBeltSheetModal && (() => {
+                        const springerTours = dispositionTourBoard.filter(tb => tb.isSpringer && tb.totalStops > 0);
+                        const stops0900 = criticalMorningStops.filter(s => s.is0900);
+                        return (
+                            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                                <div className="bg-white w-full max-w-5xl max-h-[90vh] rounded-2xl shadow-2xl border-2 border-[#FFB500] flex flex-col overflow-hidden">
+                                    <div className="bg-[#1e1410] text-white p-4 flex flex-wrap justify-between items-center gap-3 shrink-0 border-b-2 border-[#FFB500]">
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="bg-[#FFB500] text-[#1e1410] font-black text-xs px-2.5 py-0.5 rounded uppercase">06:45 Band-Start</span>
+                                                <h3 className="font-black text-base lg:text-lg text-white">📋 Band-Anweisung (Umverfügungen) &amp; Express-Springer Zettel</h3>
+                                            </div>
+                                            <p className="text-xs text-amber-200/80 mt-0.5">
+                                                Anweisung für Vorlader am Sortierband &amp; Fahrer-Einweisung • Abfahrt Depot: <b>{routeStartTime} Uhr</b>
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={handleCopyBeltSheetWhatsApp}
+                                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs px-3.5 py-2 rounded-lg shadow flex items-center gap-1.5"
+                                            >
+                                                📲 Für WhatsApp / Schichtgruppe kopieren
+                                            </button>
+                                            <button
+                                                onClick={() => window.print()}
+                                                className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-3 py-2 rounded-lg"
+                                            >
+                                                🖨️ Drucken
+                                            </button>
+                                            <button
+                                                onClick={() => setShowBeltSheetModal(false)}
+                                                className="w-8 h-8 rounded-full bg-white/10 hover:bg-red-600 text-white font-bold"
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-6 bg-slate-50">
+                                        {/* 1. Umverfügungen am Sortierband */}
+                                        <div className="bg-white rounded-xl border-2 border-indigo-200 shadow-sm overflow-hidden">
+                                            <div className="bg-indigo-950 text-white px-4 py-2.5 flex justify-between items-center">
+                                                <div className="font-black text-sm flex items-center gap-2">
+                                                    <span>🔀 1. UMVERFÜGUNGEN AM SORTIERBAND (Aus Stamm-Tour ➔ In Ziel-Tour)</span>
+                                                </div>
+                                                <span className="bg-indigo-500 text-white text-xs font-black px-2.5 py-0.5 rounded-full">
+                                                    {beltRedirections.length} Stopps umverfügt
+                                                </span>
+                                            </div>
+                                            {beltRedirections.length === 0 ? (
+                                                <div className="p-6 text-center text-sm text-emerald-700 font-bold bg-emerald-50/50">
+                                                    ✓ Keine Umverfügungen nötig — alle Sendungen liegen auf ihren regulären Stamm-Touren (S01–S42)!
+                                                </div>
+                                            ) : (
+                                                <div className="overflow-x-auto">
+                                                    <table className="min-w-full divide-y divide-gray-200 text-left text-xs">
+                                                        <thead className="bg-indigo-50/70">
+                                                            <tr>
+                                                                <th className="p-2.5 font-black text-indigo-950">Aus Stamm-Tour (Band)</th>
+                                                                <th className="p-2.5 font-black text-indigo-950">➔ In Ziel-Tour (Laden)</th>
+                                                                <th className="p-2.5 font-black text-indigo-950 text-center">SLA</th>
+                                                                <th className="p-2.5 font-black text-indigo-950">PLZ / Ort / Straße</th>
+                                                                <th className="p-2.5 font-black text-indigo-950">Empfänger / Tracking</th>
+                                                                <th className="p-2.5 font-black text-indigo-950 text-center">Pakete</th>
+                                                                <th className="p-2.5 font-black text-indigo-950 text-right">Aktion</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100">
+                                                            {beltRedirections.map((b, idx) => (
+                                                                <tr key={idx} className="hover:bg-indigo-50/30">
+                                                                    <td className="p-2.5">
+                                                                        <span className="bg-gray-200 text-gray-900 font-black px-2.5 py-1 rounded text-xs">
+                                                                            Aus {b.fromTour}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="p-2.5">
+                                                                        <span className={"font-black px-2.5 py-1 rounded text-xs " + (b.isSpringerTarget ? "bg-indigo-600 text-white" : "bg-amber-400 text-[#1e1410]")}>
+                                                                            ➔ In {b.toTour} {b.toDriver ? `(${b.toDriver})` : ''}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="p-2.5 text-center">
+                                                                        <span className={"px-2 py-0.5 rounded font-black text-[10px] " + (b.commit === '09:00' ? 'bg-red-600 text-white' : b.commit === '10:30' ? 'bg-purple-600 text-white' : 'bg-orange-500 text-white')}>
+                                                                            {b.commit}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="p-2.5 font-bold text-gray-900">
+                                                                        {b.postalCode} {b.city}, {b.street}
+                                                                    </td>
+                                                                    <td className="p-2.5 text-gray-700">
+                                                                        <div className="font-bold">{b.recipient || '-'}</div>
+                                                                        {b.trackingNrs && <div className="text-[10px] font-mono text-gray-500 truncate max-w-[200px]">{b.trackingNrs}</div>}
+                                                                    </td>
+                                                                    <td className="p-2.5 text-center font-black text-sm">{b.pkgCount}</td>
+                                                                    <td className="p-2.5 text-right">
+                                                                        <button
+                                                                            onClick={() => handleAssignStopOrPlz(b.sampleRow, b.fromTour, 'stop')}
+                                                                            className="text-[10px] font-bold text-indigo-700 hover:underline bg-indigo-50 px-2 py-1 rounded border border-indigo-200"
+                                                                            title={`Wieder zurück an Stamm-Tour ${b.fromTour} geben`}
+                                                                        >
+                                                                            ↺ Zurück an {b.fromTour}
+                                                                        </button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* 2. 09:00 Uhr Express-Kontrollliste */}
+                                        <div className="bg-white rounded-xl border-2 border-red-200 shadow-sm overflow-hidden">
+                                            <div className="bg-red-900 text-white px-4 py-2.5 flex justify-between items-center">
+                                                <div className="font-black text-sm">
+                                                    🔴 2. 09:00 UHR EXPRESS-KONTROLLLISTE (Persönliche Übergabe an Fahrer)
+                                                </div>
+                                                <span className="bg-red-600 text-white text-xs font-black px-2.5 py-0.5 rounded-full">
+                                                    {stops0900.length} Stopps
+                                                </span>
+                                            </div>
+                                            {stops0900.length === 0 ? (
+                                                <div className="p-4 text-center text-xs text-gray-500 font-bold">
+                                                    Keine 09:00 Uhr Express-Sendungen in dieser Datei.
+                                                </div>
+                                            ) : (
+                                                <div className="overflow-x-auto">
+                                                    <table className="min-w-full divide-y divide-gray-200 text-left text-xs">
+                                                        <thead className="bg-red-50">
+                                                            <tr>
+                                                                <th className="p-2.5 font-black text-red-950">Tour &amp; Fahrer</th>
+                                                                <th className="p-2.5 font-black text-red-950 text-center">Prognose ETA</th>
+                                                                <th className="p-2.5 font-black text-red-950">Adresse</th>
+                                                                <th className="p-2.5 font-black text-red-950">Empfänger</th>
+                                                                <th className="p-2.5 font-black text-red-950 text-right">Schnell-Umverfügung</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100">
+                                                            {stops0900.map((s, idx) => (
+                                                                <tr key={idx} className={s.isConflict ? "bg-red-50/80" : ""}>
+                                                                    <td className="p-2.5 font-black text-gray-900">
+                                                                        <span className="bg-red-100 text-red-900 px-2 py-0.5 rounded mr-1.5">{s.currentTour}</span>
+                                                                        <span className="text-gray-600 font-semibold">{s.driverName || ''}</span>
+                                                                    </td>
+                                                                    <td className="p-2.5 text-center font-black">
+                                                                        <span className={s.isConflict ? "text-red-600 underline" : "text-emerald-700"}>
+                                                                            {s.etaStr} ({s.bufferMins >= 0 ? `+${s.bufferMins}m` : `${s.bufferMins}m`})
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="p-2.5 font-bold text-gray-800">{s.postalCode} {s.city}, {s.street}</td>
+                                                                    <td className="p-2.5 text-gray-700 font-semibold">{s.recipient || '-'} ({s.pkgCount} Pkt)</td>
+                                                                    <td className="p-2.5 text-right space-x-1">
+                                                                        {s.histAltTour && s.histAltTour !== s.currentTour && (
+                                                                            <button
+                                                                                onClick={() => handleAssignStopOrPlz(s.rows[0], s.histAltTour, 'stop')}
+                                                                                className="bg-amber-100 hover:bg-amber-200 text-amber-900 px-2 py-0.5 rounded text-[10px] font-black"
+                                                                            >
+                                                                                ↪ Nachbar {s.histAltTour}
+                                                                            </button>
+                                                                        )}
+                                                                        {s.springerTour && s.springerTour !== s.currentTour && (
+                                                                            <button
+                                                                                onClick={() => handleAssignStopOrPlz(s.rows[0], s.springerTour, 'stop')}
+                                                                                className="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded text-[10px] font-black"
+                                                                            >
+                                                                                ⚡ Springer {s.springerTour}
+                                                                            </button>
+                                                                        )}
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* 3. Express-Springer Touren (S1H-S5H) */}
+                                        {springerTours.length > 0 && (
+                                            <div className="space-y-3">
+                                                <h4 className="font-black text-sm text-indigo-950 uppercase tracking-wider">
+                                                    ⚡ 3. Aktive Express-Springer Touren ({springerTours.length})
+                                                </h4>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                    {springerTours.map(sp => (
+                                                        <div key={sp.tour} className="bg-white rounded-xl border-2 border-indigo-300 shadow-sm p-4 space-y-2.5">
+                                                            <div className="flex justify-between items-center border-b pb-2">
+                                                                <div>
+                                                                    <span className="bg-indigo-600 text-white font-black text-xs px-2 py-0.5 rounded mr-2">{sp.tour}</span>
+                                                                    <span className="font-bold text-xs text-gray-700">{sp.driverName || 'Express-Springer'}</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <button
+                                                                        onClick={() => handleCopyDriverWhatsApp(sp)}
+                                                                        className="bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black px-2.5 py-1 rounded"
+                                                                    >
+                                                                        📲 WhatsApp
+                                                                    </button>
+                                                                    {sp.googleNavUrl && (
+                                                                        <a
+                                                                            href={sp.googleNavUrl}
+                                                                            target="_blank"
+                                                                            className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black px-2.5 py-1 rounded"
+                                                                        >
+                                                                            🧭 Google Route ↗
+                                                                        </a>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <div className="divide-y divide-gray-100 text-xs">
+                                                                {sp.stopSchedule.map(st => (
+                                                                    <div key={st.key} className="py-1.5 flex justify-between items-center gap-2">
+                                                                        <div>
+                                                                            <span className="font-black text-gray-500 mr-1">#{st.stopIndex}</span>
+                                                                            <span className="font-black text-red-700 mr-1">[{st.commit}]</span>
+                                                                            <span className="font-bold text-gray-900">{st.postalCode} {st.city}, {st.street}</span>
+                                                                            {st.recipient && <span className="text-gray-500 ml-1">({st.recipient})</span>}
+                                                                        </div>
+                                                                        <span className="bg-indigo-50 text-indigo-800 px-1.5 py-0.5 rounded text-[10px] font-black shrink-0">
+                                                                            aus {st.histPrimaryTour}
+                                                                        </span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </div>
